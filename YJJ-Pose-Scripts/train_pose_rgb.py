@@ -23,7 +23,8 @@ def main():
     try:
         results = model.train(
             task='pose',
-            data='datasets/acupoint_rgb.yaml',
+            # data='datasets/acupoint_rgb.yaml',
+            data='datasets/acupoint_leg_rgb.yaml',
 
             # 【关键】先试训10轮！没问题再改成300
             epochs=120,

@@ -23,7 +23,8 @@ def main():
     try:
         results = model.train(
             task='pose',
-            data='datasets/acupoint.yaml',
+            #data='datasets/acupoint.yaml',
+            data='datasets/acupoint_leg.yaml',
 
             # 【关键】先试训10轮！没问题再改成300
             epochs=120,
@@ -34,7 +35,7 @@ def main():
             name='train_pose_rgbd_4ch',
             project='runs/pose',
 
-            patience=20,
+            patience=0,
             save=True,
             plots=True,
             verbose=True,
