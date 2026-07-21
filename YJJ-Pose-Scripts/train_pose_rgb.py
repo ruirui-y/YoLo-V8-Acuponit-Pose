@@ -9,13 +9,13 @@ def main():
 
     # 1. 加载模型
     print("\n1. 加载模型...")
-    model = YOLO('yolov8n-pose_4ch_perfect.pt', task='pose')
+    model = YOLO('yolov8n-pose.pt', task='pose')
 
-    # 验证模型是 4 通道
+    # 验证模型是 3 通道
     first_layer = model.model.model[0].conv
     print(f"第一层卷积输入通道: {first_layer.weight.shape[1]}")
-    assert first_layer.weight.shape[1] == 4, "❌ 模型不是4通道！"
-    print("✓ 模型确认为 4 通道")
+    assert first_layer.weight.shape[1] == 3, "❌ 模型不是3通道！"
+    print("✓ 模型确认为 3 通道")
 
     # 2. 开始试训 (先跑10轮确认没问题)
     print("\n2. 开始试训...")
@@ -23,7 +23,7 @@ def main():
     try:
         results = model.train(
             task='pose',
-            data='datasets/acupoint.yaml',
+            data='datasets/acupoint_rgb.yaml',
 
             # 【关键】先试训10轮！没问题再改成300
             epochs=120,
@@ -31,7 +31,7 @@ def main():
             imgsz=640,
             batch=4,
             device='cuda:0' if torch.cuda.is_available() else 'cpu',
-            name='train_pose_rgbd_4ch',
+            name='train_pose_rgb_3ch',
             project='runs/pose',
 
             patience=20,

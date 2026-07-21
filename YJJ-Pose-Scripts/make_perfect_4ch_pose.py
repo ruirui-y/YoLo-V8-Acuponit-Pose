@@ -7,7 +7,8 @@ print("🚀 终极外科手术 3.0：最稳的 4通道 Pose 模型")
 print("============================================================")
 
 print("\n1. 加载 yolov8n-pose.pt...")
-old_model = YOLO('yolov8n-pose.pt')
+#old_model = YOLO('yolov8n-pose.pt')
+old_model = YOLO('runs/pose/train_pose_rgb_3ch/weights/best.pt', task='pose')
 old_state_dict = old_model.model.state_dict()
 
 print("2. 正在修改网络图纸...")

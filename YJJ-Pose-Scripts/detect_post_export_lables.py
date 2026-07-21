@@ -154,9 +154,9 @@ def predict_with_exact_training_match(
 
 if __name__ == '__main__':
     compare_result = predict_with_exact_training_match(
-        model_path='runs/pose/train_pose_rgbd_10ep_test2/weights/best.pt',
-        img_path="H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection/datasets/acupoint/images/train/20250915_103_0_0043.png",
-        gt_label_path="H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection/datasets/acupoint/labels/train/20250915_103_0_0043.txt",
+        model_path="runs/pose/train_pose_rgbd_10ep_test3/weights/best.pt",
+        img_path="H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection/datasets/acupoint/images/test/20250915_103_0_0061.png",
+        gt_label_path="H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection/datasets/acupoint/labels/test/20250915_103_0_0061.txt",
         conf_threshold=0.5,
         save_path="pose_final_match.jpg"
     )
