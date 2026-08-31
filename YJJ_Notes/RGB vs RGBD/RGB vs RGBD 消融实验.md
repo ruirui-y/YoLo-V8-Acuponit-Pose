@@ -45,12 +45,12 @@
 
 ### 第 1 步：跑 RGBD 模型（A2，这是你已有的）
 
-**做什么**：直接用你写好的 `train_pose_rgbd.py` 开始训练。
+**做什么**：直接用你写好的 `train_rgbd_pose.py` 开始训练。
 
 **打开文件确认一下关键内容**，大概长这样：
 
 ```python
-# train_pose_rgbd.py 核心部分
+# train_rgbd_pose.py 核心部分
 from ultralytics import YOLO
 
 def main():
@@ -88,7 +88,7 @@ if __name__ == '__main__':
 ```bash
 conda activate yolov8
 cd H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection
-python train_pose_rgbd.py
+python train_rgbd_pose.py
 ```
 
 **训练过程中你会看到什么：**
@@ -114,9 +114,9 @@ runs/pose/train_pose_rgbd_4ch/results.png        ← 训练曲线图
 
 ### 第 2 步：跑 RGB 模型（A1，需要新建脚本）
 
-**做什么**：复制 `train_pose_rgbd.py`，改一行代码后开始训练。
+**做什么**：复制 `train_rgbd_pose.py`，改一行代码后开始训练。
 
-1. 复制文件：把 `train_pose_rgbd.py` 复制一份，重命名为 `train_pose_rgb.py`
+1. 复制文件：把 `train_rgbd_pose.py` 复制一份，重命名为 `train_rgb_pose.py`
 2. 修改模型加载那一行：
 
 ```python
@@ -128,7 +128,7 @@ model = YOLO('yolov8n-pose.pt', task='pose')
 ```
 
 > 💡 **为什么可以用官方的？** 官方 `yolov8n-pose.pt` 本来就是 3 通道的，直接下载就能用。
-> 你之前做 `make_perfect_4ch_pose.py` 是因为你需要 4 通道才要转换。
+> 你之前做 `build_rgbd_pose_weights.py` 是因为你需要 4 通道才要转换。
 
 3. 改一下训练名字，免得跟 RGBD 的结果混在一起：
 
@@ -142,7 +142,7 @@ name='train_pose_rgb_3ch',   # 改成 3ch 方便区分
 
 ```bash
 conda activate yolov8
-python train_pose_rgb.py
+python train_rgb_pose.py
 ```
 
 6. 训练结束后会生成：
@@ -160,7 +160,7 @@ runs/pose/train_pose_rgb_3ch/results.csv
 **先评估 RGBD 模型：**
 
 ```bash
-python test_evaluation.py \
+python eval_pipeline_smoke_test.py \
     --model runs/pose/train_pose_rgbd_4ch/weights/best.pt \
     --data datasets/acupoint.yaml \
     --split test
@@ -169,7 +169,7 @@ python test_evaluation.py \
 **再评估 RGB 模型：**
 
 ```bash
-python test_evaluation.py \
+python eval_pipeline_smoke_test.py \
     --model runs/pose/train_pose_rgb_3ch/weights/best.pt \
     --data datasets/acupoint.yaml \
     --split test
@@ -218,7 +218,7 @@ python test_evaluation.py \
 第一次运行会自动从外网下载。可以手动下载放到项目根目录：
 - 下载地址：https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-pose.pt
 
-### 问题 4：test_evaluation.py 报错
+### 问题 4：eval_pipeline_smoke_test.py 报错
 
 看看测试集路径对不对：
 ```
@@ -243,17 +243,17 @@ H:/YJJ/Yolo_RGBD/yolov8-rgbd-detection/datasets/acupoint/images/test/
 
 | 序号   | 做什么                                               | 在哪里             | 预计耗时    |
 | ------ | ---------------------------------------------------- | ------------------ | ----------- |
-| [ ] 1  | 打开 `train_pose_rgbd.py`，确认代码没问题            | 项目根目录         | 5 分钟      |
-| [ ] 2  | 确认 epochs=120, patience=20 已设好                  | train_pose_rgbd.py | 2 分钟      |
-| [ ] 3  | **跑 RGBD 模型**：`python train_pose_rgbd.py`        | 终端（命令行）     | ~30-60 分钟 |
-| [ ] 4  | 复制 `train_pose_rgbd.py` → 改名 `train_pose_rgb.py` | 文件管理器         | 1 分钟      |
-| [ ] 5  | 把模型加载那行换成官方 `yolov8n-pose.pt`             | train_pose_rgb.py  | 1 分钟      |
-| [ ] 6  | 把 name 改成 `train_pose_rgb_3ch`                    | train_pose_rgb.py  | 1 分钟      |
-| [ ] 7  | **跑 RGB 模型**：`python train_pose_rgb.py`          | 终端               | ~30-60 分钟 |
-| [ ] 8  | **评估 RGBD**：运行 test_evaluation.py               | 终端               | 2 分钟      |
-| [ ] 9  | **评估 RGB**：运行 test_evaluation.py                | 终端               | 2 分钟      |
+| [ ] 1  | 打开 `train_rgbd_pose.py`，确认代码没问题            | 项目根目录         | 5 分钟      |
+| [ ] 2  | 确认 epochs=120, patience=20 已设好                  | train_rgbd_pose.py | 2 分钟      |
+| [ ] 3  | **跑 RGBD 模型**：`python train_rgbd_pose.py`        | 终端（命令行）     | ~30-60 分钟 |
+| [ ] 4  | 复制 `train_rgbd_pose.py` → 改名 `train_rgb_pose.py` | 文件管理器         | 1 分钟      |
+| [ ] 5  | 把模型加载那行换成官方 `yolov8n-pose.pt`             | train_rgb_pose.py  | 1 分钟      |
+| [ ] 6  | 把 name 改成 `train_pose_rgb_3ch`                    | train_rgb_pose.py  | 1 分钟      |
+| [ ] 7  | **跑 RGB 模型**：`python train_rgb_pose.py`          | 终端               | ~30-60 分钟 |
+| [ ] 8  | **评估 RGBD**：运行 eval_pipeline_smoke_test.py               | 终端               | 2 分钟      |
+| [ ] 9  | **评估 RGB**：运行 eval_pipeline_smoke_test.py                | 终端               | 2 分钟      |
 | [ ] 10 | 把两个模型的指标填到对比表格                         | 笔记/Word          | 10 分钟     |
 
 ---
 
-好了，这就是方向一的全部流程。如果你想，我可以现在就帮你把 `train_pose_rgb.py`（RGB 3通道训练脚本）直接写出来，你只需要复制粘贴然后运行就行。要不要？
+好了，这就是方向一的全部流程。如果你想，我可以现在就帮你把 `train_rgb_pose.py`（RGB 3通道训练脚本）直接写出来，你只需要复制粘贴然后运行就行。要不要？

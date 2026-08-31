@@ -841,7 +841,7 @@ if __name__ == '__main__':
 **测试结果**
 
 ```python
-(yolov8) H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection>python YJJ-Pose-Scripts/test_evaluation.py
+(yolov8) H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection>python YJJ-Pose-Scripts/eval_pipeline_smoke_test.py
 ============================================================
  终极摸底考试：测试集绝密测验
 ============================================================

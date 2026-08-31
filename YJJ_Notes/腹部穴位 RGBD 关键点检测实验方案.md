@@ -46,7 +46,7 @@
 | 实验组     | 模型         | 输入通道    | 预训练权重来源                               |
 | ---------- | ------------ | ----------- | -------------------------------------------- |
 | A1（基线） | YOLOv8n-Pose | 3（RGB 仅） | 官方 `yolov8n-pose.pt` → 保留原 3 通道       |
-| A2（本文） | YOLOv8n-Pose | 4（RGBD）   | `make_perfect_4ch_pose.py` 转换的 4 通道权重 |
+| A2（本文） | YOLOv8n-Pose | 4（RGBD）   | `build_rgbd_pose_weights.py` 转换的 4 通道权重 |
 
 **控制变量**：所有训练超参数完全一致，仅输入通道数不同。
 
@@ -149,16 +149,16 @@
 ### Step 3：依次训练所有模型
 | 顺序 | 实验             | 训练命令                                | 预期耗时 |
 | ---- | ---------------- | --------------------------------------- | -------- |
-| 1    | YOLOv8n-Pose 4ch | `train_pose_rgbd.py`（已有）            | ~1 天    |
-| 2    | YOLOv8n-Pose 3ch | 修改 `train_pose_rgbd.py` 加载 3ch 权重 | ~1 天    |
+| 1    | YOLOv8n-Pose 4ch | `train_rgbd_pose.py`（已有）            | ~1 天    |
+| 2    | YOLOv8n-Pose 3ch | 修改 `train_rgbd_pose.py` 加载 3ch 权重 | ~1 天    |
 | 3    | YOLOv8s-Pose 4ch | 创建 s 版本权重 + 训练                  | ~1.5 天  |
 | 4    | YOLO11n-Pose 4ch | 创建 11n 权重 + 训练                    | ~1 天    |
 | 5    | YOLO11s-Pose 4ch | 创建 11s 权重 + 训练                    | ~1.5 天  |
 
 ### Step 4：验证与评估
 ```bash
-# 使用 test_evaluation.py 或 model.val() 输出所有指标
-python test_evaluation.py --model runs/pose/xxx/weights/best.pt
+# 使用 eval_pipeline_smoke_test.py 或 model.val() 输出所有指标
+python eval_pipeline_smoke_test.py --model runs/pose/xxx/weights/best.pt
 ```
 
 ### Step 5：记录指标并填充表格

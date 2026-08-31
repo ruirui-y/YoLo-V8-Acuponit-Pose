@@ -39,7 +39,7 @@ cd /d H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection
 运行这个命令：
 
 ```bash
-python YJJ-Pose-Scripts/make_perfect_4ch_pose.py
+python YJJ-Pose-Scripts/build_rgbd_pose_weights.py
 ```
 
 **这个脚本会自动做三件事：**
@@ -69,11 +69,11 @@ python YJJ-Pose-Scripts/make_perfect_4ch_pose.py
 
 # 🚀 第四步：先跑 RGBD（4通道）训练
 
-> 先跑4通道版本，因为你的 `train_pose_rgbd.py` 本来就是为它写的。
+> 先跑4通道版本，因为你的 `train_rgbd_pose.py` 本来就是为它写的。
 
 ## 4.1 确认脚本内容
 
-打开 `YJJ-Pose-Scripts/train_pose_rgbd.py`，找到训练参数那一段，确保是以下内容：
+打开 `YJJ-Pose-Scripts/train_rgbd_pose.py`，找到训练参数那一段，确保是以下内容：
 
 ```python
 results = model.train(
@@ -116,13 +116,13 @@ results = model.train(
 在命令行输入：
 
 ```bash
-python YJJ-Pose-Scripts/train_pose_rgbd.py
+python YJJ-Pose-Scripts/train_rgbd_pose.py
 ```
 
 ## 4.3 训练过程中你会看到什么
 
 ```
-(yolov8) H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection>python YJJ-Pose-Scripts/train_pose_rgbd.py
+(yolov8) H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection>python YJJ-Pose-Scripts/train_rgbd_pose.py
 
      Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size
      1/120     1.08G      3.629      28.82      2.256         16        640
@@ -169,11 +169,11 @@ channels: 3
 
 ## 5.2 复制脚本
 
-把 `YJJ-Pose-Scripts/train_pose_rgbd.py` 复制一份，重命名为 `train_pose_rgb.py`。
+把 `YJJ-Pose-Scripts/train_rgbd_pose.py` 复制一份，重命名为 `train_rgb_pose.py`。
 
 ## 5.3 修改四处
 
-打开 `YJJ-Pose-Scripts/train_pose_rgb.py`，找到这四处改掉：
+打开 `YJJ-Pose-Scripts/train_rgb_pose.py`，找到这四处改掉：
 
 ```python
 # 第1处：加载 3 通道官方权重（约第12行）
@@ -208,7 +208,7 @@ name='train_pose_rgb_3ch',
 ## 5.4 开始训练
 
 ```bash
-python YJJ-Pose-Scripts/train_pose_rgb.py
+python YJJ-Pose-Scripts/train_rgb_pose.py
 ```
 
 ## 5.5 训练结束后会生成
@@ -227,7 +227,7 @@ runs/pose/train_pose_rgb_3ch/results.png
 
 ## 6.1 评估 RGBD（4通道）
 
-创建 `YJJ-Pose-Scripts/eval_rgbd.py`：
+创建 `YJJ-Pose-Scripts/eval_rgbd_pose.py`：
 
 ```python
 from ultralytics import YOLO
@@ -249,12 +249,12 @@ if __name__ == '__main__':
 运行：
 
 ```bash
-python YJJ-Pose-Scripts/eval_rgbd.py
+python YJJ-Pose-Scripts/eval_rgbd_pose.py
 ```
 
 ## 6.2 评估 RGB（3通道）
 
-创建 `YJJ-Pose-Scripts/eval_rgb.py`：
+创建 `YJJ-Pose-Scripts/eval_rgb_pose.py`：
 
 ```python
 from ultralytics import YOLO
@@ -276,7 +276,7 @@ if __name__ == '__main__':
 运行：
 
 ```bash
-python YJJ-Pose-Scripts/eval_rgb.py
+python YJJ-Pose-Scripts/eval_rgb_pose.py
 ```
 
 > 💡 **`split='test'` 什么意思？**
@@ -301,11 +301,11 @@ python YJJ-Pose-Scripts/eval_rgb.py
 | ------ | ------------------------------ | ------------------------------------------------------------ | -------------- |
 | [ ] 1  | 删除旧的 `runs/` 文件夹        | 文件管理器删除                                               | 1分钟          |
 | [ ] 2  | 打开 cmd 并进入环境            | `conda activate yolov8` → `cd /d H:\YJJ\Yolo_RGBD\yolov8-rgbd-detection` | 1分钟          |
-| [ ] 3  | 生成 4 通道权重                | `python YJJ-Pose-Scripts/make_perfect_4ch_pose.py`           | 1分钟          |
-| [ ] 4  | 修改 `train_pose_rgbd.py` 参数 | epochs=120, patience=20, name 改掉                           | 2分钟          |
-| [ ] 5  | **跑 RGBD 训练**               | `python YJJ-Pose-Scripts/train_pose_rgbd.py`                 | **~30-60分钟** |
-| [ ] 6  | 创建 `train_pose_rgb.py`       | 复制 + 改 2 行                                               | 2分钟          |
-| [ ] 7  | **跑 RGB 训练**                | `python YJJ-Pose-Scripts/train_pose_rgb.py`                  | **~30-60分钟** |
+| [ ] 3  | 生成 4 通道权重                | `python YJJ-Pose-Scripts/build_rgbd_pose_weights.py`           | 1分钟          |
+| [ ] 4  | 修改 `train_rgbd_pose.py` 参数 | epochs=120, patience=20, name 改掉                           | 2分钟          |
+| [ ] 5  | **跑 RGBD 训练**               | `python YJJ-Pose-Scripts/train_rgbd_pose.py`                 | **~30-60分钟** |
+| [ ] 6  | 创建 `train_rgb_pose.py`       | 复制 + 改 2 行                                               | 2分钟          |
+| [ ] 7  | **跑 RGB 训练**                | `python YJJ-Pose-Scripts/train_rgb_pose.py`                  | **~30-60分钟** |
 | [ ] 8  | **评估 RGBD**                  | 运行上面的评估命令                                           | 2分钟          |
 | [ ] 9  | **评估 RGB**                   | 运行上面的评估命令                                           | 2分钟          |
 | [ ] 10 | 填对比表格                     | 记下数字                                                     | 5分钟          |
