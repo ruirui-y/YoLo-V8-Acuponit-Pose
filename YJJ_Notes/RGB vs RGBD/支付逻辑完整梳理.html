@@ -1,0 +1,1573 @@
+<!doctype html>
+<html>
+<head>
+<meta charset='UTF-8'><meta name='viewport' content='width=device-width initial-scale=1'>
+<title>支付逻辑完整梳理</title><link href='https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap' rel='stylesheet' type='text/css' /><link href='file://./drake/font.css' rel='stylesheet' type='text/css' /><style type='text/css'>html {overflow-x: initial !important;}:root { --node-fill: #ECECFF; --node-border: #CCCCFF; --cluster-fill: #ffffde; --cluster-border: #aaaa33; --note-fill: #fff5ad; --note-border: #aaaa33; --mermaid-color: var(--text-color); }
+.label { font-family: var(--mermaid-font-family); color: rgb(51, 51, 51); }
+.label text { fill: rgb(51, 51, 51); }
+.node rect, .node circle, .node ellipse, .node polygon { fill: var(--node-fill); stroke: rgb(147, 112, 219); stroke-width: 1px; }
+.node .label { text-align: center; }
+.node.clickable { cursor: pointer; }
+.arrowheadPath { fill: var(--text-color); }
+.edgePath .path { stroke: var(--text-color); stroke-width: 1.5px; }
+.edgeLabel { background-color: rgb(232, 232, 232); text-align: center; }
+.cluster rect { fill: var(--cluster-fill); stroke: var(--cluster-border); stroke-width: 1px; }
+.cluster text { fill: var(--text-color); }
+div.mermaidTooltip { position: absolute; text-align: center; max-width: 200px; padding: 2px; font-family: var(--mermaid-font-family); font-size: 12px; background: var(--cluster-fill); border: 1px solid var(--cluster-border); border-radius: 2px; pointer-events: none; z-index: 100; }
+.actor { stroke: var(--node-border); fill: var(--node-fill); }
+text.actor { fill: black; stroke: none; }
+.actor-line { stroke: grey; }
+.messageLine0 { stroke-width: 1.5; stroke: var(--text-color); }
+.messageLine1 { stroke-width: 1.5; stroke: var(--text-color); }
+#arrowhead { fill: var(--text-color); }
+.sequenceNumber { fill: white; }
+#sequencenumber { fill: var(--text-color); }
+#crosshead path { fill: var(--text-color)  !important; stroke: var(--text-color)  !important; }
+.messageText { fill: var(--text-color); stroke: none; }
+.labelBox { stroke: var(--node-border); fill: var(--node-fill); }
+.labelText { fill: black; stroke: none; }
+.loopText { fill: black; stroke: none; }
+.loopLine { stroke-width: 2; stroke: var(--node-border); }
+.note { stroke: var(--cluster-border); fill: rgb(255, 245, 173); }
+.noteText { fill: black; stroke: none; font-family: var(--mermaid-font-family); font-size: 14px; }
+.activation0 { fill: rgb(244, 244, 244); stroke: rgb(102, 102, 102); }
+.activation1 { fill: rgb(244, 244, 244); stroke: rgb(102, 102, 102); }
+.activation2 { fill: rgb(244, 244, 244); stroke: rgb(102, 102, 102); }
+.mermaid-main-font { font-family: var(--mermaid-font-family); }
+.section { stroke: none; opacity: 0.2; }
+.section0 { fill: rgba(102, 102, 255, 0.49); }
+.section2 { fill: rgb(255, 244, 0); }
+.section1, .section3 { fill: white; opacity: 0.2; }
+.sectionTitle0 { fill: var(--text-color); }
+.sectionTitle1 { fill: var(--text-color); }
+.sectionTitle2 { fill: var(--text-color); }
+.sectionTitle3 { fill: var(--text-color); }
+.sectionTitle { text-anchor: start; font-size: 11px; font-family: var(--mermaid-font-family); }
+.grid .tick { stroke: lightgrey; opacity: 0.3; shape-rendering: crispedges; }
+.grid .tick text { font-family: var(--mermaid-font-family); }
+.grid path { stroke-width: 0; }
+.today { fill: none; stroke: red; stroke-width: 2px; }
+.task { stroke-width: 2; }
+.taskText { text-anchor: middle; font-family: var(--mermaid-font-family); }
+.taskText:not([font-size]) { font-size: 11px; }
+.taskTextOutsideRight { fill: black; text-anchor: start; font-size: 11px; font-family: var(--mermaid-font-family); }
+.taskTextOutsideLeft { fill: black; text-anchor: end; font-size: 11px; }
+.task.clickable { cursor: pointer; }
+.taskText.clickable { cursor: pointer; font-weight: bold; fill: rgb(0, 49, 99) !important; }
+.taskTextOutsideLeft.clickable { cursor: pointer; font-weight: bold; fill: rgb(0, 49, 99) !important; }
+.taskTextOutsideRight.clickable { cursor: pointer; font-weight: bold; fill: rgb(0, 49, 99) !important; }
+.taskText0, .taskText1, .taskText2, .taskText3 { fill: white; }
+.task0, .task1, .task2, .task3 { fill: rgb(138, 144, 221); stroke: rgb(83, 79, 188); }
+.taskTextOutside0, .taskTextOutside2 { fill: black; }
+.taskTextOutside1, .taskTextOutside3 { fill: black; }
+.active0, .active1, .active2, .active3 { fill: rgb(191, 199, 255); stroke: rgb(83, 79, 188); }
+.activeText0, .activeText1, .activeText2, .activeText3 { fill: black !important; }
+.done0, .done1, .done2, .done3 { stroke: grey; fill: lightgrey; stroke-width: 2; }
+.doneText0, .doneText1, .doneText2, .doneText3 { fill: black !important; }
+.crit0, .crit1, .crit2, .crit3 { stroke: rgb(255, 136, 136); fill: red; stroke-width: 2; }
+.activeCrit0, .activeCrit1, .activeCrit2, .activeCrit3 { stroke: rgb(255, 136, 136); fill: rgb(191, 199, 255); stroke-width: 2; }
+.doneCrit0, .doneCrit1, .doneCrit2, .doneCrit3 { stroke: rgb(255, 136, 136); fill: lightgrey; stroke-width: 2; cursor: pointer; shape-rendering: crispedges; }
+.milestone { transform: rotate(45deg) scale(0.8, 0.8); }
+.milestoneText { font-style: italic; }
+.doneCritText0, .doneCritText1, .doneCritText2, .doneCritText3 { fill: black !important; }
+.activeCritText0, .activeCritText1, .activeCritText2, .activeCritText3 { fill: black !important; }
+.titleText { text-anchor: middle; font-size: 18px; fill: black; font-family: var(--mermaid-font-family); }
+g.classGroup text { fill: rgb(147, 112, 219); stroke: none; font-family: var(--mermaid-font-family); font-size: 10px; }
+g.classGroup text .title { font-weight: bolder; }
+g.classGroup rect { fill: var(--node-fill); stroke: rgb(147, 112, 219); }
+g.classGroup line { stroke: rgb(147, 112, 219); stroke-width: 1; }
+.classLabel .box { stroke: none; stroke-width: 0; fill: var(--node-fill); opacity: 0.5; }
+.classLabel .label { fill: rgb(147, 112, 219); font-size: 10px; }
+.relation { stroke: rgb(147, 112, 219); stroke-width: 1; fill: none; }
+#compositionStart { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#compositionEnd { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#aggregationStart { fill: var(--node-fill); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#aggregationEnd { fill: var(--node-fill); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#dependencyStart { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#dependencyEnd { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#extensionStart { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+#extensionEnd { fill: rgb(147, 112, 219); stroke: rgb(147, 112, 219); stroke-width: 1; }
+.commit-id, .commit-msg, .branch-label { fill: lightgrey; color: lightgrey; font-family: var(--mermaid-font-family); }
+.pieTitleText { text-anchor: middle; font-size: 25px; fill: black; font-family: var(--mermaid-font-family); }
+.slice { font-family: var(--mermaid-font-family); }
+g.stateGroup text { fill: rgb(147, 112, 219); stroke: none; font-size: 10px; font-family: var(--mermaid-font-family); }
+g.stateGroup text { fill: rgb(147, 112, 219); stroke: none; font-size: 10px; }
+g.stateGroup .state-title { font-weight: bolder; fill: black; }
+g.stateGroup rect { fill: var(--node-fill); stroke: rgb(147, 112, 219); }
+g.stateGroup line { stroke: rgb(147, 112, 219); stroke-width: 1; }
+.transition { stroke: rgb(147, 112, 219); stroke-width: 1; fill: none; }
+.stateGroup .composit { fill: white; border-bottom: 1px; }
+.state-note { stroke: var(--cluster-border); fill: rgb(255, 245, 173); }
+.state-note text { fill: black; stroke: none; font-size: 10px; }
+.stateLabel .box { stroke: none; stroke-width: 0; fill: var(--node-fill); opacity: 0.5; }
+.stateLabel text { fill: black; font-size: 10px; font-weight: bold; font-family: var(--mermaid-font-family); }
+.node text { font-size: 14px; }
+div.mermaidTooltip { position: absolute; text-align: center; max-width: 200px; padding: 2px; font-family: var(--mermaid-font-family); font-size: 12px; background: var(--cluster-fill); border: 1px solid var(--cluster-border); border-radius: 2px; pointer-events: none; z-index: 100; }
+#write .md-diagram-panel .md-diagram-panel-preview div { width: initial; }
+
+
+:root { --bg-color:#ffffff; --text-color:#333333; --select-text-bg-color:#B5D6FC; --select-text-font-color:auto; --monospace:"Lucida Console",Consolas,"Courier",monospace; }
+html { font-size: 14px; background-color: var(--bg-color); color: var(--text-color); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+body { margin: 0px; padding: 0px; height: auto; bottom: 0px; top: 0px; left: 0px; right: 0px; font-size: 1rem; line-height: 1.42857; overflow-x: hidden; background: inherit; tab-size: 4; }
+iframe { margin: auto; }
+a.url { word-break: break-all; }
+a:active, a:hover { outline: 0px; }
+.in-text-selection, ::selection { text-shadow: none; background: var(--select-text-bg-color); color: var(--select-text-font-color); }
+#write { margin: 0px auto; height: auto; width: inherit; word-break: normal; overflow-wrap: break-word; position: relative; white-space: normal; overflow-x: visible; padding-top: 40px; }
+#write.first-line-indent p { text-indent: 2em; }
+#write.first-line-indent li p, #write.first-line-indent p * { text-indent: 0px; }
+#write.first-line-indent li { margin-left: 2em; }
+.for-image #write { padding-left: 8px; padding-right: 8px; }
+body.typora-export { padding-left: 30px; padding-right: 30px; }
+.typora-export .footnote-line, .typora-export li, .typora-export p { white-space: pre-wrap; }
+@media screen and (max-width: 500px) {
+  body.typora-export { padding-left: 0px; padding-right: 0px; }
+  #write { padding-left: 20px; padding-right: 20px; }
+  .CodeMirror-sizer { margin-left: 0px !important; }
+  .CodeMirror-gutters { display: none !important; }
+}
+#write li > figure:last-child { margin-bottom: 0.5rem; }
+#write ol, #write ul { position: relative; }
+img { max-width: 100%; vertical-align: middle; }
+button, input, select, textarea { color: inherit; font: inherit; }
+input[type="checkbox"], input[type="radio"] { line-height: normal; padding: 0px; }
+*, ::after, ::before { box-sizing: border-box; }
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, #write p, #write pre { width: inherit; }
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, #write p { position: relative; }
+p { line-height: inherit; }
+h1, h2, h3, h4, h5, h6 { break-after: avoid-page; break-inside: avoid; orphans: 2; }
+p { orphans: 4; }
+h1 { font-size: 2rem; }
+h2 { font-size: 1.8rem; }
+h3 { font-size: 1.6rem; }
+h4 { font-size: 1.4rem; }
+h5 { font-size: 1.2rem; }
+h6 { font-size: 1rem; }
+.md-math-block, .md-rawblock, h1, h2, h3, h4, h5, h6, p { margin-top: 1rem; margin-bottom: 1rem; }
+.hidden { display: none; }
+.md-blockmeta { color: rgb(204, 204, 204); font-weight: 700; font-style: italic; }
+a { cursor: pointer; }
+sup.md-footnote { padding: 2px 4px; background-color: rgba(238, 238, 238, 0.7); color: rgb(85, 85, 85); border-radius: 4px; cursor: pointer; }
+sup.md-footnote a, sup.md-footnote a:hover { color: inherit; text-transform: inherit; text-decoration: inherit; }
+#write input[type="checkbox"] { cursor: pointer; width: inherit; height: inherit; }
+figure { overflow-x: auto; margin: 1.2em 0px; max-width: calc(100% + 16px); padding: 0px; }
+figure > table { margin: 0px !important; }
+tr { break-inside: avoid; break-after: auto; }
+thead { display: table-header-group; }
+table { border-collapse: collapse; border-spacing: 0px; width: 100%; overflow: auto; break-inside: auto; text-align: left; }
+table.md-table td { min-width: 32px; }
+.CodeMirror-gutters { border-right: 0px; background-color: inherit; }
+.CodeMirror-linenumber { user-select: none; }
+.CodeMirror { text-align: left; }
+.CodeMirror-placeholder { opacity: 0.3; }
+.CodeMirror pre { padding: 0px 4px; }
+.CodeMirror-lines { padding: 0px; }
+div.hr:focus { cursor: none; }
+#write pre { white-space: pre-wrap; }
+#write.fences-no-line-wrapping pre { white-space: pre; }
+#write pre.ty-contain-cm { white-space: normal; }
+.CodeMirror-gutters { margin-right: 4px; }
+.md-fences { font-size: 0.9rem; display: block; break-inside: avoid; text-align: left; overflow: visible; white-space: pre; background: inherit; position: relative !important; }
+.md-diagram-panel { width: 100%; margin-top: 10px; text-align: center; padding-top: 0px; padding-bottom: 8px; overflow-x: auto; }
+#write .md-fences.mock-cm { white-space: pre-wrap; }
+.md-fences.md-fences-with-lineno { padding-left: 0px; }
+#write.fences-no-line-wrapping .md-fences.mock-cm { white-space: pre; overflow-x: auto; }
+.md-fences.mock-cm.md-fences-with-lineno { padding-left: 8px; }
+.CodeMirror-line, twitterwidget { break-inside: avoid; }
+.footnotes { opacity: 0.8; font-size: 0.9rem; margin-top: 1em; margin-bottom: 1em; }
+.footnotes + .footnotes { margin-top: 0px; }
+.md-reset { margin: 0px; padding: 0px; border: 0px; outline: 0px; vertical-align: top; background: 0px 0px; text-decoration: none; text-shadow: none; float: none; position: static; width: auto; height: auto; white-space: nowrap; cursor: inherit; -webkit-tap-highlight-color: transparent; line-height: normal; font-weight: 400; text-align: left; box-sizing: content-box; direction: ltr; }
+li div { padding-top: 0px; }
+blockquote { margin: 1rem 0px; }
+li .mathjax-block, li p { margin: 0.5rem 0px; }
+li { margin: 0px; position: relative; }
+blockquote > :last-child { margin-bottom: 0px; }
+blockquote > :first-child, li > :first-child { margin-top: 0px; }
+.footnotes-area { color: rgb(136, 136, 136); margin-top: 0.714rem; padding-bottom: 0.143rem; white-space: normal; }
+#write .footnote-line { white-space: pre-wrap; }
+@media print {
+  body, html { border: 1px solid transparent; height: 99%; break-after: avoid; break-before: avoid; }
+  #write { margin-top: 0px; padding-top: 0px; border-color: transparent !important; }
+  .typora-export * { -webkit-print-color-adjust: exact; }
+  html.blink-to-pdf { font-size: 13px; }
+  .typora-export #write { padding-left: 32px; padding-right: 32px; padding-bottom: 0px; break-after: avoid; }
+  .typora-export #write::after { height: 0px; }
+}
+.footnote-line { margin-top: 0.714em; font-size: 0.7em; }
+a img, img a { cursor: pointer; }
+pre.md-meta-block { font-size: 0.8rem; min-height: 0.8rem; white-space: pre-wrap; background: rgb(204, 204, 204); display: block; overflow-x: hidden; }
+p > .md-image:only-child:not(.md-img-error) img, p > img:only-child { display: block; margin: auto; }
+p > .md-image:only-child { display: inline-block; width: 100%; }
+#write .MathJax_Display { margin: 0.8em 0px 0px; }
+.md-math-block { width: 100%; }
+.md-math-block:not(:empty)::after { display: none; }
+[contenteditable="true"]:active, [contenteditable="true"]:focus { outline: 0px; box-shadow: none; }
+.md-task-list-item { position: relative; list-style-type: none; }
+.task-list-item.md-task-list-item { padding-left: 0px; }
+.md-task-list-item > input { position: absolute; top: 0px; left: 0px; margin-left: -1.2em; margin-top: calc(1em - 10px); border: none; }
+.math { font-size: 1rem; }
+.md-toc { min-height: 3.58rem; position: relative; font-size: 0.9rem; border-radius: 10px; }
+.md-toc-content { position: relative; margin-left: 0px; }
+.md-toc-content::after, .md-toc::after { display: none; }
+.md-toc-item { display: block; color: rgb(65, 131, 196); }
+.md-toc-item a { text-decoration: none; }
+.md-toc-inner:hover { text-decoration: underline; }
+.md-toc-inner { display: inline-block; cursor: pointer; }
+.md-toc-h1 .md-toc-inner { margin-left: 0px; font-weight: 700; }
+.md-toc-h2 .md-toc-inner { margin-left: 2em; }
+.md-toc-h3 .md-toc-inner { margin-left: 4em; }
+.md-toc-h4 .md-toc-inner { margin-left: 6em; }
+.md-toc-h5 .md-toc-inner { margin-left: 8em; }
+.md-toc-h6 .md-toc-inner { margin-left: 10em; }
+@media screen and (max-width: 48em) {
+  .md-toc-h3 .md-toc-inner { margin-left: 3.5em; }
+  .md-toc-h4 .md-toc-inner { margin-left: 5em; }
+  .md-toc-h5 .md-toc-inner { margin-left: 6.5em; }
+  .md-toc-h6 .md-toc-inner { margin-left: 8em; }
+}
+a.md-toc-inner { font-size: inherit; font-style: inherit; font-weight: inherit; line-height: inherit; }
+.footnote-line a:not(.reversefootnote) { color: inherit; }
+.md-attr { display: none; }
+.md-fn-count::after { content: "."; }
+code, pre, samp, tt { font-family: var(--monospace); }
+kbd { margin: 0px 0.1em; padding: 0.1em 0.6em; font-size: 0.8em; color: rgb(36, 39, 41); background: rgb(255, 255, 255); border: 1px solid rgb(173, 179, 185); border-radius: 3px; box-shadow: rgba(12, 13, 14, 0.2) 0px 1px 0px, rgb(255, 255, 255) 0px 0px 0px 2px inset; white-space: nowrap; vertical-align: middle; }
+.md-comment { color: rgb(162, 127, 3); opacity: 0.8; font-family: var(--monospace); }
+code { text-align: left; vertical-align: initial; }
+a.md-print-anchor { white-space: pre !important; border-width: initial !important; border-style: none !important; border-color: initial !important; display: inline-block !important; position: absolute !important; width: 1px !important; right: 0px !important; outline: 0px !important; background: 0px 0px !important; text-decoration: initial !important; text-shadow: initial !important; }
+.md-inline-math .MathJax_SVG .noError { display: none !important; }
+.html-for-mac .inline-math-svg .MathJax_SVG { vertical-align: 0.2px; }
+.md-math-block .MathJax_SVG_Display { text-align: center; margin: 0px; position: relative; text-indent: 0px; max-width: none; max-height: none; min-height: 0px; min-width: 100%; width: auto; overflow-y: hidden; display: block !important; }
+.MathJax_SVG_Display, .md-inline-math .MathJax_SVG_Display { width: auto; margin: inherit; display: inline-block !important; }
+.MathJax_SVG .MJX-monospace { font-family: var(--monospace); }
+.MathJax_SVG .MJX-sans-serif { font-family: sans-serif; }
+.MathJax_SVG { display: inline; font-style: normal; font-weight: 400; line-height: normal; zoom: 90%; text-indent: 0px; text-align: left; text-transform: none; letter-spacing: normal; word-spacing: normal; overflow-wrap: normal; white-space: nowrap; float: none; direction: ltr; max-width: none; max-height: none; min-width: 0px; min-height: 0px; border: 0px; padding: 0px; margin: 0px; }
+.MathJax_SVG * { transition: none 0s ease 0s; }
+.MathJax_SVG_Display svg { vertical-align: middle !important; margin-bottom: 0px !important; margin-top: 0px !important; }
+.os-windows.monocolor-emoji .md-emoji { font-family: "Segoe UI Symbol", sans-serif; }
+.md-diagram-panel > svg { max-width: 100%; }
+[lang="mermaid"] svg, [lang="flow"] svg { max-width: 100%; height: auto; }
+[lang="mermaid"] .node text { font-size: 1rem; }
+table tr th { border-bottom: 0px; }
+video { max-width: 100%; display: block; margin: 0px auto; }
+iframe { max-width: 100%; width: 100%; border: none; }
+.highlight td, .highlight tr { border: 0px; }
+svg[id^="mermaidChart"] { line-height: 1em; }
+mark { background: rgb(255, 255, 0); color: rgb(0, 0, 0); }
+.md-html-inline .md-plain, .md-html-inline strong, mark .md-inline-math, mark strong { color: inherit; }
+mark .md-meta { color: rgb(0, 0, 0); opacity: 0.3 !important; }
+
+
+.CodeMirror { height: auto; }
+.CodeMirror.cm-s-inner { background: inherit; }
+.CodeMirror-scroll { overflow: auto hidden; z-index: 3; }
+.CodeMirror-gutter-filler, .CodeMirror-scrollbar-filler { background-color: rgb(255, 255, 255); }
+.CodeMirror-gutters { border-right: 1px solid rgb(221, 221, 221); background: inherit; white-space: nowrap; }
+.CodeMirror-linenumber { padding: 0px 3px 0px 5px; text-align: right; color: rgb(153, 153, 153); }
+.cm-s-inner .cm-keyword { color: rgb(119, 0, 136); }
+.cm-s-inner .cm-atom, .cm-s-inner.cm-atom { color: rgb(34, 17, 153); }
+.cm-s-inner .cm-number { color: rgb(17, 102, 68); }
+.cm-s-inner .cm-def { color: rgb(0, 0, 255); }
+.cm-s-inner .cm-variable { color: rgb(0, 0, 0); }
+.cm-s-inner .cm-variable-2 { color: rgb(0, 85, 170); }
+.cm-s-inner .cm-variable-3 { color: rgb(0, 136, 85); }
+.cm-s-inner .cm-string { color: rgb(170, 17, 17); }
+.cm-s-inner .cm-property { color: rgb(0, 0, 0); }
+.cm-s-inner .cm-operator { color: rgb(152, 26, 26); }
+.cm-s-inner .cm-comment, .cm-s-inner.cm-comment { color: rgb(170, 85, 0); }
+.cm-s-inner .cm-string-2 { color: rgb(255, 85, 0); }
+.cm-s-inner .cm-meta { color: rgb(85, 85, 85); }
+.cm-s-inner .cm-qualifier { color: rgb(85, 85, 85); }
+.cm-s-inner .cm-builtin { color: rgb(51, 0, 170); }
+.cm-s-inner .cm-bracket { color: rgb(153, 153, 119); }
+.cm-s-inner .cm-tag { color: rgb(17, 119, 0); }
+.cm-s-inner .cm-attribute { color: rgb(0, 0, 204); }
+.cm-s-inner .cm-header, .cm-s-inner.cm-header { color: rgb(0, 0, 255); }
+.cm-s-inner .cm-quote, .cm-s-inner.cm-quote { color: rgb(0, 153, 0); }
+.cm-s-inner .cm-hr, .cm-s-inner.cm-hr { color: rgb(153, 153, 153); }
+.cm-s-inner .cm-link, .cm-s-inner.cm-link { color: rgb(0, 0, 204); }
+.cm-negative { color: rgb(221, 68, 68); }
+.cm-positive { color: rgb(34, 153, 34); }
+.cm-header, .cm-strong { font-weight: 700; }
+.cm-del { text-decoration: line-through; }
+.cm-em { font-style: italic; }
+.cm-link { text-decoration: underline; }
+.cm-error { color: red; }
+.cm-invalidchar { color: red; }
+.cm-constant { color: rgb(38, 139, 210); }
+.cm-defined { color: rgb(181, 137, 0); }
+div.CodeMirror span.CodeMirror-matchingbracket { color: rgb(0, 255, 0); }
+div.CodeMirror span.CodeMirror-nonmatchingbracket { color: rgb(255, 34, 34); }
+.cm-s-inner .CodeMirror-activeline-background { background: inherit; }
+.CodeMirror { position: relative; overflow: hidden; }
+.CodeMirror-scroll { height: 100%; outline: 0px; position: relative; box-sizing: content-box; background: inherit; }
+.CodeMirror-sizer { position: relative; }
+.CodeMirror-gutter-filler, .CodeMirror-hscrollbar, .CodeMirror-scrollbar-filler, .CodeMirror-vscrollbar { position: absolute; z-index: 6; display: none; }
+.CodeMirror-vscrollbar { right: 0px; top: 0px; overflow: hidden; }
+.CodeMirror-hscrollbar { bottom: 0px; left: 0px; overflow: hidden; }
+.CodeMirror-scrollbar-filler { right: 0px; bottom: 0px; }
+.CodeMirror-gutter-filler { left: 0px; bottom: 0px; }
+.CodeMirror-gutters { position: absolute; left: 0px; top: 0px; padding-bottom: 30px; z-index: 3; }
+.CodeMirror-gutter { white-space: normal; height: 100%; box-sizing: content-box; padding-bottom: 30px; margin-bottom: -32px; display: inline-block; }
+.CodeMirror-gutter-wrapper { position: absolute; z-index: 4; background: 0px 0px !important; border: none !important; }
+.CodeMirror-gutter-background { position: absolute; top: 0px; bottom: 0px; z-index: 4; }
+.CodeMirror-gutter-elt { position: absolute; cursor: default; z-index: 4; }
+.CodeMirror-lines { cursor: text; }
+.CodeMirror pre { border-radius: 0px; border-width: 0px; background: 0px 0px; font-family: inherit; font-size: inherit; margin: 0px; white-space: pre; overflow-wrap: normal; color: inherit; z-index: 2; position: relative; overflow: visible; }
+.CodeMirror-wrap pre { overflow-wrap: break-word; white-space: pre-wrap; word-break: normal; }
+.CodeMirror-code pre { border-right: 30px solid transparent; width: fit-content; }
+.CodeMirror-wrap .CodeMirror-code pre { border-right: none; width: auto; }
+.CodeMirror-linebackground { position: absolute; left: 0px; right: 0px; top: 0px; bottom: 0px; z-index: 0; }
+.CodeMirror-linewidget { position: relative; z-index: 2; overflow: auto; }
+.CodeMirror-wrap .CodeMirror-scroll { overflow-x: hidden; }
+.CodeMirror-measure { position: absolute; width: 100%; height: 0px; overflow: hidden; visibility: hidden; }
+.CodeMirror-measure pre { position: static; }
+.CodeMirror div.CodeMirror-cursor { position: absolute; visibility: hidden; border-right: none; width: 0px; }
+.CodeMirror div.CodeMirror-cursor { visibility: hidden; }
+.CodeMirror-focused div.CodeMirror-cursor { visibility: inherit; }
+.cm-searching { background: rgba(255, 255, 0, 0.4); }
+@media print {
+  .CodeMirror div.CodeMirror-cursor { visibility: hidden; }
+}
+
+
+/*
+ * MIT License
+ *
+ * Copyright (c) 2023 劉強東 https://github.com/liangjingkanji
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+@import url();
+@include-when-export url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+:root {
+    --text-color: #b0b1ac;
+    --bg-color: #20242f;
+    --control-text-color: var(--text-color);
+    --meta-content-color: var(--text-color);
+    --active-file-border-color: var(--drake-accent);
+    --rawblock-edit-panel-bd: var(--code-block-bg-color);
+    --item-hover-bg-color: #151924;
+    --active-file-bg-color: var(--item-hover-bg-color);
+    --mermaid-theme: night;
+
+    --blur-text-color: rgba(176, 177, 172, 0.5);
+    --md-char-color: #535455;
+    --side-bar-bg-color: var(--bg-color);
+    --search-select-bg-color: #ffffff;
+    --search-select-text-color: var(--bg-color);
+    --select-text-bg-color: #3473B068;
+    --window-border: 1px solid #1f2430;
+
+    --drake-accent: #fcc65c;
+    --drake-highlight: #ffcc66;
+    --a-color: var(--drake-highlight);
+    --variable-color: var(--drake-highlight);
+    --outline-active-color: var(--a-color);
+    --code-block-bg-color: var(--item-hover-bg-color);
+    --code-block-color: var(--text-color);
+    --title-color: #cbcdbf;
+    --blockquote-border-color: var(--drake-accent);
+    --blockquote-color: var(--text-color);
+    --blockquote-bg-color: rgba(255, 204, 102, 0.05);
+    --strong-color: var(--title-color);
+    --h2-underline-color: var(--title-color);
+    --horizontal-divider-color: var(--title-color);
+    --height-light-color: var(--drake-highlight);
+    --height-light-border-color: var(--drake-highlight);
+    --yaml-color: #676773;
+    --yaml-bg-color: var(--code-block-bg-color);
+    --footnotes-bg-color: var(--item-hover-bg-color);
+    --footnotes-highlight: #FFD760;
+    --table-border-color: #111520;
+    --table-header-bg-color: #1a1e29;
+    --table-bg-color: var(--bg-color);
+    --table-n2-bg-color: var(--table-header-bg-color);
+    --input-bg-color: var(--item-hover-bg-color);
+    --btn-hover-bg-color: var(--item-hover-bg-color);
+    --checkbox-checked: url("data:image/svg+xml,%3Csvg class='icon' viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cpath d='M425.984 726.016l384-384-59.99-61.995-324.01 324.011-152.021-152.021L213.973 512zm384-598.016q36.01 0 61.013 25.984T896 213.974v596.01q0 34.005-25.003 59.99t-61.013 25.983h-596.01q-36.011 0-61.014-25.984t-25.003-59.989v-596.01q0-34.006 25.003-59.99T213.973 128h596.011z' fill='%2365b73b'/%3E%3C/svg%3E");
+    --checkbox-unchecked: url("data:image/svg+xml,%3Csvg class='icon' viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cpath d='M810.667 213.333v597.334H213.333V213.333h597.334m0-85.333H213.333C166.4 128 128 166.4 128 213.333v597.334C128 857.6 166.4 896 213.333 896h597.334C857.6 896 896 857.6 896 810.667V213.333C896 166.4 857.6 128 810.667 128z' fill='%23acb7c4'/%3E%3C/svg%3E");
+}
+
+html {
+    font-size: var(--text-size);
+}
+
+body {
+    font-family: var(--text-font) !important;
+    color: var(--text-color);
+    -webkit-font-feature-settings: "liga" on, "calt" on;
+    -webkit-font-smoothing: subpixel-antialiased;
+    text-rendering: optimizeLegibility;
+    letter-spacing: 0;
+    margin: 0;
+    overflow-x: hidden;
+}
+
+p {
+    line-height: var(--text-line-height);
+}
+
+/*code block*/
+.md-fences {
+    font-size: 1rem;
+    padding: 0.5rem !important;
+    border-radius: 2px;
+    word-wrap: normal;
+    background-color: var(--code-block-bg-color);
+    color: var(--code-block-color);
+    border: none;
+    line-height: var(--code-line-height);
+}
+
+/*inline latex*/
+.MathJax {
+    font-size: 120% !important;
+}
+.MathJax text, .MathJax use {
+    font-family: var(--latex-font);
+}
+/*math-block latex*/
+.md-math-block .MathJax {
+    font-size: 130% !important;
+}
+
+/*mermaid*/
+[id^=mermaidChart] .cluster rect {
+    fill: var(--table-n2-bg-color) !important;
+    stroke: var(--table-border-color) !important;
+}
+[id^=mermaidChart] .grid .tick text,
+[id^=mermaidChart] .titleText {
+    fill: var(--text-color) !important;
+}
+[id^=mermaidChart] .clusters span.nodeLabel {
+    color: var(--text-color) !important;
+    line-height: 1.8rem;
+}
+[mermaid-type="journey"] line {
+    stroke: #7a7a7a !important;
+}
+[mermaid-type="journey"] .label {
+    color: #333 !important;
+}
+[id^=mermaidChart] .relationshipLabelBox {
+    fill: var(--bg-color) !important;
+    opacity: 1 !important;
+    background-color: var(--bg-color) !important;
+}
+[id^=mermaidChart] .legend {
+    fill: var(--text-color) !important;
+}
+[id^=mermaidChart] g.label {
+    font-size: 1rem !important;
+}
+[id^=mermaidChart] line.divider {
+    stroke: var(--table-border-color) !important;
+}
+[id^=mermaidChart] span.nodeLabel {
+    color: var(--code-block-color) !important;
+    line-height: 1.8rem;
+}
+tspan {
+    color: var(--text-color)
+}
+[id^=mermaidChart] .entityLabel {
+    fill: var(--code-block-color) !important;
+}
+[id^=mermaidChart] {
+    fill: var(--text-color) !important;
+}
+[id^=mermaidChart] rect.rect {
+    fill: rgba(175, 255, 212, 0.3) !important;
+}
+.md-diagram-panel-preview text.actor > tspan { /*方块文字*/
+    fill: var(--code-block-color) !important;
+    stroke: none !important;
+    font-family: var(--text-font) !important;
+    font-size: 1rem !important;
+}
+.md-diagram-panel-preview .actor, .md-diagram-panel-preview .entityBox { /*方块*/
+    stroke: var(--table-border-color) !important;
+    fill: var(--code-block-bg-color) !important;
+}
+.md-diagram-panel-preview .actor-line { /*竖线*/
+    stroke: var(--text-color) !important;
+    stroke-width: 1px;
+}
+.md-diagram-panel-preview .messageLine0 { /*横线*/
+    stroke-width: 1.5;
+    stroke-dasharray: none;
+    stroke: var(--text-color) !important;
+}
+.md-diagram-panel-preview .messageLine1 { /*虚线*/
+    stroke-width: 1.5 !important;
+    stroke-dasharray: 2, 2 !important;
+    stroke: var(--text-color) !important;
+}
+.md-diagram-panel-preview .messageText { /*描述文字*/
+    fill: var(--text-color) !important;
+    font-family: var(--text-font) !important;
+    font-size: 1rem !important;
+}
+.md-diagram-panel-preview .activation0 { /*长方形*/
+    fill: #e6e6e6 !important;
+    stroke: var(--text-color) !important;
+}
+.md-diagram-panel-preview .labelText, .md-diagram-panel-preview .labelText > tspan { /*循环标记*/
+    fill: var(--code-block-color) !important;
+    font-family: var(--text-font) !important;
+    font-size: 1rem !important;
+    dominant-baseline: unset;
+    alignment-baseline: unset;
+}
+.md-diagram-panel-preview .labelBox { /*循环标记背景*/
+    stroke: var(--table-border-color) !important;
+    fill: var(--code-block-bg-color) !important;
+}
+.md-diagram-panel-preview .loopLine { /*循环标记虚线*/
+    stroke: var(--text-color) !important;
+}
+.md-diagram-panel-preview .loopText, .md-diagram-panel-preview .loopText > tspan { /*循环名称*/
+    fill: var(--text-color) !important;
+    font-size: 1rem !important;
+}
+.md-diagram-panel-preview .sequenceNumber { /*序号*/
+    fill: var(--bg-color) !important;
+}
+pre.md-fences-advanced.md-focus .md-fences-adv-panel {
+    border: none;
+}
+.md-diagram-panel-preview .edgePath .path { /*箭头*/
+    stroke: var(--text-color) !important;
+}
+.md-diagram-panel-preview .edgeLabel rect { /*条件文字背景*/
+    fill: var(--bg-color) !important;
+}
+.md-diagram-panel-preview .edgeLabel span { /*条件文字*/
+    color: var(--text-color) !important;
+    background: var(--bg-color) !important;
+}
+.md-diagram-panel-preview .node rect,
+.md-diagram-panel-preview .node circle,
+.md-diagram-panel-preview .node ellipse,
+.md-diagram-panel-preview .node polygon,
+.md-diagram-panel-preview .node path { /*形状*/
+    stroke: var(--table-border-color) !important;
+    fill: var(--code-block-bg-color) !important;
+}
+#write .md-diagram-panel .md-diagram-panel-preview div { /*形状内文字*/
+    color: var(--code-block-color);
+    font-family: var(--text-font) !important;
+    font-size: 1rem !important;
+}
+
+/*code snippet*/
+#write code, tt {
+    margin: 0 2px;
+    color: var(--drake-highlight);
+}
+
+/*variable*/
+var {
+    color: var(--variable-color);
+    font-weight: bold;
+}
+
+/*raw block*/
+.md-rawblock-control:not(.md-rawblock-tooltip) {
+    border-radius: 2px 0 2px 2px;
+    padding: 0.2rem !important;
+}
+.md-rawblock:hover > .md-rawblock-container {
+    background: none;
+}
+.md-rawblock-input {
+    font-size: 1rem;
+}
+.md-rawblock-tooltip-btn:hover {
+    background: none;
+}
+.md-rawblock:hover > .md-rawblock-tooltip {
+    border-radius: 2px 2px 0 0;
+    margin-bottom: 2px !important;
+}
+.md-rawblock-tooltip.md-rawblock-control {
+    border-radius: 2px 2px 0 0;
+    color: var(--code-block-color);
+}
+.md-rawblock-tooltip-name {
+    color: var(--code-block-color);
+    opacity: 1;
+}
+
+/*quote block*/
+blockquote:before {
+    display: block;
+    position: absolute;
+    content: '';
+    width: 4px;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background-color: var(--blockquote-border-color);
+    border-radius: 2px;
+}
+
+blockquote {
+    color: var(--blockquote-color);
+    border-radius: 2px;
+    padding: 10px 16px;
+    background-color: var(--blockquote-bg-color);
+    position: relative;
+    border-left: none;
+}
+
+strong {
+    color: var(--strong-color);
+    font-weight: bold;
+}
+#write blockquote strong {
+    color: var(--blockquote-color);
+}
+
+/*link*/
+#write a {
+    color: var(--a-color);
+    text-decoration: none;
+}
+#write h2 a .md-plain {
+    border-bottom: .2rem solid var(--a-color);
+}
+.on-focus-mode #write a .md-plain, .on-focus-mode .md-htmlblock-container a:hover {
+    border-bottom: .1rem solid var(--blur-text-color);
+}
+#write a .md-plain, .md-htmlblock-container a:hover,
+.on-focus-mode #write .md-focus a .md-plain, .md-focus .md-htmlblock-container a:hover {
+    border-bottom: .1rem solid var(--a-color);
+}
+[md-inline=link] a {
+    margin: 0 .2rem;
+}
+a:any-link {
+    color: var(--a-color);
+}
+
+img {
+    border-left: none;
+    border-right: none;
+    vertical-align: baseline;
+    border-radius: 2px;
+}
+
+#write {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px 30px 100px;
+}
+#typora-source .CodeMirror-lines {
+    max-width: 1200px;
+}
+
+#write > ul:first-child,
+#write > ol:first-child {
+    margin-top: 30px;
+}
+
+body > *:first-child {
+    margin-top: 0 !important;
+}
+
+body > *:last-child {
+    margin-bottom: 0 !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: var(--title-font);
+    position: relative;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    font-weight: bold;
+    line-height: 1.4;
+    cursor: text;
+    color: var(--title-color);
+}
+
+h3.md-focus:before, h4.md-focus:before, h5.md-focus:before, h6.md-focus:before {
+    visibility: hidden;
+}
+
+h1 {
+    font-size: 2rem;
+    text-align: center;
+    margin-top: 0;
+}
+
+h2 {
+    font-size: 1.8rem;
+    margin-bottom: 1.5rem;
+}
+
+.on-focus-mode h2.md-end-block.md-heading:not(.md-focus):not(.md-focus-container):after {
+    background-color: var(--blur-text-color) !important;
+}
+
+h3 {
+    font-size: 1.4rem;
+}
+
+h4 {
+    font-size: 1.2rem;
+}
+
+h5 {
+    font-size: 1rem;
+}
+
+h6 {
+    font-size: 1rem;
+}
+
+h1:hover a.anchor,
+h2:hover a.anchor,
+h3:hover a.anchor,
+h4:hover a.anchor,
+h5:hover a.anchor,
+h6:hover a.anchor {
+    text-decoration: none;
+}
+
+h1 tt,
+h1 code {
+    font-size: inherit !important;
+}
+
+h2 tt,
+h2 code {
+    font-size: inherit !important;
+}
+
+h3 tt,
+h3 code {
+    font-size: inherit !important;
+}
+
+h4 tt,
+h4 code {
+    font-size: inherit !important;
+}
+
+h5 tt,
+h5 code {
+    font-size: inherit !important;
+}
+
+h6 tt,
+h6 code {
+    font-size: inherit !important;
+}
+
+p, blockquote, ul, ol, dl, table {
+    margin: var(--p-spacing) 0;
+}
+
+li > ol,
+li > ul {
+    margin: 0 0;
+}
+li {
+    margin: 0.5em 0;
+}
+
+hr {
+    height: 2px;
+    padding: 0;
+    margin: 16px 0;
+    background-color: var(--horizontal-divider-color);
+    border: 0 none;
+    overflow: hidden;
+    box-sizing: content-box;
+}
+
+body > h2:first-child {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+body > h1:first-child {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+body > h1:first-child + h2 {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+body > h3:first-child,
+body > h4:first-child,
+body > h5:first-child,
+body > h6:first-child {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+a:first-child h1,
+a:first-child h2,
+a:first-child h3,
+a:first-child h4,
+a:first-child h5,
+a:first-child h6 {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+h1 p,
+h2 p,
+h3 p,
+h4 p,
+h5 p,
+h6 p {
+    margin-top: 0;
+}
+
+li p.first {
+    display: inline-block;
+}
+
+ul, ol {
+    padding-inline-start: 2em;
+}
+
+ul:first-child,
+ol:first-child {
+    margin-top: 0;
+}
+
+ul:last-child,
+ol:last-child {
+    margin-bottom: 0;
+}
+
+.ty-table-edit {
+    margin-top: -1rem !important;
+}
+#write table {
+    margin-top: 1rem;
+    word-break: initial;
+    background-color: var(--table-bg-color);
+}
+table tr {
+    border-top: .1em solid var(--table-border-color);
+    margin: 0;
+    padding: 0;
+}
+table th {
+    font-weight: bold;
+    border: .1em solid var(--table-border-color);
+    border-bottom: 0;
+    margin: 0;
+    padding: 6px 13px;
+}
+table td {
+    border: .1em solid var(--table-border-color);
+    margin: 0;
+    padding: 6px 13px;
+}
+table thead {
+    background-color: var(--table-header-bg-color);
+}
+table tr:nth-child(2n) {
+    background-color: var(--table-n2-bg-color);
+}
+table tr th:first-child,
+table tr td:first-child {
+    margin-top: 0;
+}
+table tr th:last-child,
+table tr td:last-child {
+    margin-bottom: 0;
+}
+
+#write em {
+    padding: 0 5px 0 2px;
+}
+
+#write table thead th {
+    background-color: var(--table-header-bg-color);
+}
+
+/* height light */
+#write mark {
+    border: .1em solid var(--height-light-border-color);
+    color: var(--height-light-color);
+    background-color: transparent;
+    padding: .1rem .5rem;
+    border-radius: 2rem;
+    margin: 0 .2rem;
+    font-size: .95rem;
+}
+
+/*shortcut*/
+kbd {
+    border: .1em solid #5b5b5e;
+    background: transparent;
+    color: var(--text-color);
+    margin: 0 .4rem;
+    font-family: var(--text-font) !important;
+    font-size: .95rem;
+    padding: .3em .4em;
+    border-radius: .4em;
+    box-shadow: .1em .1em .2em rgba(0, 0, 0, 0.3);
+}
+
+#write del {
+    padding: 1px 2px;
+}
+
+.md-task-list-item > input {
+    margin-left: -1.3em;
+}
+
+@media print {
+    html {
+        font-size: 12px;
+    }
+
+    table,
+    pre {
+        page-break-inside: avoid;
+    }
+
+    pre {
+        word-wrap: break-word;
+    }
+}
+
+/*YAML*/
+#write pre.md-meta-block {
+    padding: 1rem;
+    font-size: 1rem;
+    line-height: 1.45;
+    background-color: var(--yaml-bg-color);
+    border: 0;
+    border-radius: 2px;
+    color: var(--yaml-color);
+    margin-top: 0 !important;
+}
+
+.mathjax-block > .code-tooltip {
+    bottom: .375rem;
+}
+
+#write > h3.md-focus:before {
+    left: -1.5625rem;
+    top: .375rem;
+}
+
+#write > h4.md-focus:before {
+    left: -1.5625rem;
+    top: .285714286rem;
+}
+
+#write > h5.md-focus:before {
+    left: -1.5625rem;
+    top: .285714286rem;
+}
+
+#write > h6.md-focus:before {
+    left: -1.5625rem;
+    top: .285714286rem;
+}
+
+.md-image > .md-meta {
+    border-radius: 2px;
+    font-family: initial;
+    padding: 2px 0 0 4px;
+    color: inherit;
+}
+
+.md-tag {
+    color: inherit;
+}
+
+.md-toc {
+    margin-top: 20px;
+    padding-bottom: 20px;
+}
+
+.typora-quick-open-item {
+    font-size: 1rem !important;
+    height: 50px;
+    padding-left: 8px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+
+#typora-quick-open {
+    box-shadow: 0 0 8px #00000045;
+    padding: 0;
+}
+
+.ty-quick-open-category.ty-has-prev .ty-quick-open-category-title {
+    border-top: none;
+}
+
+#typora-quick-open-input {
+    margin: 8px;
+    box-shadow: none;
+    border-radius: 2px;
+}
+
+#typora-quick-open-input input {
+    font-size: 1rem;
+    box-shadow: none;
+    padding-top: 2px;
+    padding-left: 10px;
+    padding-right: 10px;
+    line-height: 32px;
+    max-height: 32px;
+    border: none;
+}
+
+.modal-dialog#typora-quick-open {
+    border-radius: 8px;
+}
+
+.ty-quick-open-category-title {
+    padding-left: 8px;
+    color: #BEBEBE;
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+}
+
+.typora-quick-open-item-path {
+    font-size: 0.8rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 1px;
+}
+
+/*search input*/
+.form-control {
+    border: none;
+    border-radius: 2px;
+    box-shadow: none;
+}
+
+#md-searchpanel .btn {
+    border-radius: 2px;
+}
+
+#search-panel-replaceall-btn {
+    padding-right: 5px !important;
+    text-align: center !important;
+}
+
+#search-panel-replace-btn {
+    text-align: center !important;
+}
+
+#md-searchpanel input {
+    background: var(--input-bg-color);
+    border-radius: 2px;
+}
+
+.searchpanel-search-option-btn {
+    border-radius: 2px;
+    border: none;
+    background: transparent;
+    color: var(--text-color);
+}
+
+.searchpanel-search-option-btn.active {
+    background: var(--text-color);
+    color: var(--bg-color);
+}
+
+.form-control:focus {
+    box-shadow: none;
+}
+
+#md-notification:before {
+    top: 10px;
+}
+
+/** focus mode */
+.on-focus-mode blockquote {
+    border-left-color: rgba(85, 85, 85, 0.12);
+}
+
+header,
+.context-menu,
+.megamenu-content,
+footer {
+    font-family: initial;
+}
+
+/*sidebar*/
+.file-library-node.file-tree-node.file-node-root {
+    font-size: var(--file-tree-text-size);
+}
+.file-node-content:hover .file-node-icon,
+.file-node-content:hover .file-node-open-state {
+    visibility: visible;
+}
+.file-node-content {
+    display: flex;
+    align-items: center;
+}
+.file-node-open-state {
+    margin-right: .5rem;
+}
+.file-node-icon {
+    margin-right: .5rem;
+}
+
+#typora-sidebar {
+    font-size: inherit;
+    font-family: var(--title-font);
+}
+
+.sidebar-tabs {
+    border-bottom: none;
+}
+
+.file-list-item-summary, .file-list-item-parent-loc, .file-list-item-time, .file-list-item-summary {
+    font-size: 0.9rem !important;
+    font-family: var(--text-font);
+}
+
+.file-list-item-file-ext-part {
+    display: none;
+}
+
+.outline-item {
+    font-size: var(--toc-text-size);
+}
+
+/*footnotes mark*/
+#write .md-footnote {
+    background-color: inherit;
+    color: var(--drake-highlight);
+    font-size: 0.9rem;
+    border-radius: 0.9rem;
+    padding-left: 0;
+}
+
+#write .md-footnote:before {
+    content: "[";
+}
+
+#write .md-footnote:after {
+    content: "]";
+}
+
+/*footnotes content*/
+.md-hover-tip .code-tooltip-content {
+    border-radius: 2px;
+}
+
+/*footnotes title*/
+span.md-def-name {
+    padding-right: 3ch;
+    padding-left: 0;
+    position: relative;
+    font-weight: normal;
+}
+
+/*footnotes desc*/
+.footnotes {
+    font-size: 1rem;
+    font-weight: normal;
+    color: var(--text-color);
+    position: relative;
+}
+
+/*footnotes tooltip text*/
+.code-tooltip-content .md-plain {
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+
+.code-tooltip-content code {
+    padding: 0 2px;
+    font-family: inherit;
+    color: var(--footnotes-highlight);
+    background-color: inherit;
+}
+
+.code-tooltip-content a {
+    color: var(--footnotes-highlight);
+}
+
+div.code-tooltip-content {
+    box-shadow: 0 0 8px #00000045;
+    background: var(--footnotes-bg-color);
+}
+
+.footnotes {
+    opacity: 1;
+}
+
+.md-def-name:after {
+    content: ". ^";
+    color: var(--text-color);
+}
+
+.md-def-footnote .md-def-name:before {
+    content: "";
+    color: var(--text-color);
+    position: absolute;
+}
+
+.md-def-name:before {
+    content: "";
+    color: var(--text-color);
+    position: absolute;
+}
+
+.md-content.md-url, .md-def-content.md-def-url.md-auto-disp {
+    text-decoration: none;
+    border-bottom: .1rem solid var(--text-color);
+}
+
+.CodeMirror-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.file-list-item-summary {
+    font-size: 1em;
+}
+
+.pin-outline #outline-content .outline-active strong, .pin-outline .outline-active {
+    font-weight: 500;
+    color: var(--outline-active-color);
+}
+
+.file-list-item.active {
+    border-left: 4px solid var(--drake-accent);
+}
+
+#md-searchpanel .btn:not(.close-btn):hover {
+    box-shadow: none;
+    background: var(--btn-hover-bg-color);
+}
+
+/*checkbox*/
+#write input[type=checkbox] {
+    opacity: 0;
+    height: 1.6rem;
+    width: 1.6rem;
+    margin-left: -2em;
+    margin-top: 0;
+    top: 0;
+}
+
+#write .ul-list li.md-task-list-item.task-list-done::before {
+    content: "";
+    background: var(--checkbox-checked) 0 0 no-repeat;
+    background-size: 100%;
+    display: inline-block;
+    position: absolute;
+    height: 1.6rem;
+    width: 1.6rem;
+    margin-left: -2em;
+}
+#write .ul-list li.md-task-list-item.task-list-not-done::before {
+    content: "";
+    background: var(--checkbox-unchecked) 0 0 no-repeat;
+    background-size: 100%;
+    display: inline-block;
+    position: absolute;
+    height: 1.6rem;
+    width: 1.6rem;
+    margin-left: -2em;
+}
+.task-list-item p {
+    line-height: 1.6rem;
+}
+
+/*insert table*/
+.btn {
+    border-radius: 2px;
+}
+
+.modal-content {
+    border-radius: 8px;
+}
+
+.btn-primary:hover, .btn-primary:active {
+    background-color: var(--btn-hover-bg-color);
+    color: var(--drake-highlight);
+}
+
+.btn-primary {
+    background-color: transparent;
+    color: var(--drake-highlight);
+}
+
+.btn-default {
+    background-color: transparent;
+}
+
+.btn:active {
+    box-shadow: none;
+    border-color: transparent;
+}
+
+.modal-footer {
+    border-top: none;
+}
+
+#table-insert-col, #table-insert-row {
+    background: var(--input-bg-color);
+    border-radius: 2px;
+}
+
+/*preference panel*/
+#megamenu-content {
+    background-image: none !important;
+    background-color: var(--bg-color);
+}
+#top-titlebar {
+    height: inherit;
+    background-color: var(--bg-color);
+}
+#megamenu-menu-sidebar {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+.long-btn {
+    width: inherit;
+    min-width: 300px;
+    border: 1px solid var(--text-color);
+    border-radius: 6px;
+}
+.megamenu-menu-panel h1 {
+    margin-bottom: 3rem;
+    text-align: left;
+}
+.megamenu-menu-panel h1, .megamenu-menu-panel h2 {
+    font-weight: normal;
+}
+#recent-file-panel-search-input {
+    height: 45px;
+    border: none;
+    border-bottom: 1px solid var(--text-color);
+    padding-left: 8px;
+}
+#recent-file-panel-search-input::placeholder {
+    color: var(--text-color);
+    opacity: .5;
+}
+.megamenu-menu-header {
+    border-bottom: none;
+}
+#recent-file-panel-action-btn {
+    background: none;
+    border: none;
+}
+#recent-file-panel-action-btn-container {
+    float: none;
+    display: inline-block;
+}
+#top-titlebar .toolbar-icon.btn.hover, #top-titlebar .toolbar-icon.btn:hover {
+    background-color: var(--btn-hover-bg-color);
+    color: var(--text-color);
+}
+.megamenu-menu-panel .btn:hover {
+    background-color: var(--btn-hover-bg-color) !important;
+    color: var(--text-color);
+}
+#recent-file-panel tbody tr:nth-child(2n-1),
+.megamenu-menu-panel table thead,
+.megamenu-menu-panel table tr {
+    background-color: transparent;
+}
+.megamenu-menu-panel table {
+    font-weight: normal;
+}
+#megamenu-back-btn {
+    color: var(--text-color);
+    border: 1px solid var(--text-color);
+}
+.megamenu-menu-header #megamenu-menu-header-title {
+    color: var(--text-color);
+}
+header, .context-menu, .megamenu-content, footer {
+    font-family: var(--text-font);
+}
+.ty-preferences select {
+    padding-left: 2px;
+}
+.preference-item-hint {
+    font-size: 14px;
+}
+a.ty-link {
+    color: var(--a-color);
+    margin: 0 .2rem;
+}
+
+/**
+    code render
+    Name: Ayu
+    From https://github.com/ayu-theme/ayu-colors
+ */
+.cm-s-inner.CodeMirror {
+    background: none;
+    color: var(--code-block-color);
+}
+.cm-s-inner span.cm-meta {
+    color: #BBB529;
+}
+.cm-s-inner span.cm-number {
+    color: #6897BB;
+}
+.cm-s-inner span.cm-keyword {
+    color: #ffa759;
+}
+.cm-s-inner span.cm-def {
+    color: #ffd580;
+}
+.cm-s-inner span.cm-variable {
+    color: var(--code-block-color);
+}
+.cm-s-inner span.cm-variable-2 {
+    color: var(--code-block-color);
+}
+.cm-s-inner span.cm-variable-3 {
+    color: #9876AA;
+}
+.cm-s-inner span.cm-type {
+    color: #AABBCC;
+}
+.cm-s-inner span.cm-property {
+    color: #FFC66D;
+}
+.cm-s-inner span.cm-operator {
+    color: var(--code-block-color);
+}
+.cm-s-inner span.cm-string {
+    color: #9cc16b;
+}
+.cm-s-inner span.cm-string-2 {
+    color: #9cc16b;
+}
+.cm-s-inner span.cm-comment {
+    color: #5c6773;
+}
+.cm-s-inner span.cm-link {
+    color: #ffa759;
+}
+.cm-s-inner span.cm-atom {
+    color: #ffa759;
+}
+.cm-s-inner span.cm-error {
+    color: #d1675a;
+}
+.cm-s-inner span.cm-tag {
+    color: #E8BF6A;
+}
+.cm-s-inner span.cm-quote {
+    color: #a6e22e;
+}
+.cm-s-inner span.cm-attribute {
+    color: #9876AA;
+}
+.cm-s-inner span.cm-qualifier {
+    color: #6A8759;
+}
+.cm-s-inner span.cm-bracket {
+    color: #E8BF6A;
+}
+.cm-s-inner span.cm-builtin {
+    color: #FF9E59;
+}
+.cm-s-inner span.cm-special {
+    color: #FF9E59;
+}
+.cm-s-inner span.cm-matchhighlight {
+    color: var(--code-block-color);
+    background-color: rgba(50, 89, 48, .7);
+    font-weight: normal;
+}
+.cm-s-inner span.cm-searching {
+    color: var(--code-block-color);
+    background-color: rgba(61, 115, 59, .7);
+    font-weight: normal;
+}
+.cm-s-inner .CodeMirror-gutters {
+    border-right: none;
+    border-radius: 2px;
+    padding-left: 0.5rem;
+    background: var(--bg-color);
+}
+.cm-s-inner .CodeMirror-linenumber {
+    color: #5c6773;
+}
+.cm-s-inner .CodeMirror-matchingbracket {
+    background-color: #3B514D;
+    color: #FFEF28 !important;
+}
+.cm-s-inner .CodeMirror-selected {
+    background: #214283 !important;
+}
+.cm-s-inner .CodeMirror-selectedtext {
+    background: #214283 !important;
+}
+.cm-s-typora-default .CodeMirror-selectedtext {
+    background: var(--select-text-bg-color) !important;
+}
+.cm-overlay.CodeMirror-selectedtext {
+    background: var(--select-text-bg-color) !important;
+}
+.cm-s-inner div.CodeMirror-cursor {
+    border-left: 1px solid var(--code-block-color);
+}
+.cm-s-inner .cm-header, .cm-s-inner.cm-header {
+    color: #FFD760;
+    font-weight: normal;
+}
+
+
+</style>
+</head>
+<body class='typora-export os-windows' >
+<div  id='write'  class = 'is-node'><h1><a name="支付逻辑完整梳理paymentservice）" class="md-header-anchor"></a><span>支付逻辑完整梳理（paymentservice）</span></h1><blockquote><p><span>更新日期：2026-08-14（下午，ProcessPaymentResult 重构 + 模拟回调验证通过后）</span>
+<span>适用范围：</span><code>DemandStationServer_Boost/Services/paymentservice</code><span>（gRPC 支付服务，纯 C++）</span>
+<span>配套文档：</span><code>微服务闭环改造方案_gRPC.md</code>
+<span>图例说明：本文所有图使用 </span><strong><span>Mermaid</span></strong><span>（GitHub / VS Code 原生渲染，源码即文本，改图 = 改几行文字）</span></p></blockquote><h2><a name="一模块与文件清单" class="md-header-anchor"></a><span>一、模块与文件清单</span></h2><pre spellcheck="false" class="md-fences md-end-block ty-contain-cm modeLoaded" lang="" style="break-inside: unset;"><div class="CodeMirror cm-s-inner CodeMirror-wrap" lang=""><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 0px; left: 4px;"><textarea autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position: absolute; bottom: -1em; padding: 0px; width: 1000px; height: 1em; outline: none;"></textarea></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1"><div class="CodeMirror-sizer" style="margin-left: 0px; margin-bottom: 0px; border-right-width: 0px; padding-right: 0px; padding-bottom: 0px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines" role="presentation"><div role="presentation" style="position: relative; outline: none;"><div class="CodeMirror-measure"></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-code" role="presentation" style="text-rendering: auto;"><div class="CodeMirror-activeline" style="position: relative;"><div class="CodeMirror-activeline-background CodeMirror-linebackground"></div><div class="CodeMirror-gutter-background CodeMirror-activeline-gutter" style="left: 0px; width: 0px;"></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">Services/paymentservice/</span></pre></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├── main.cpp &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  # 入口：加载配置 → 起 gRPC(9001) + NotifyServer(8183) + OrderService</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├── PaymentServer.h / .cpp &nbsp; &nbsp; &nbsp; &nbsp;  # gRPC server：GetWallet/GetGoods/CreateOrder/ConsumePoints/GetFlow/NotifyPaid</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; # &nbsp; + ProcessPaymentResult（三入口共用：gRPC/Webhook/巡检）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├── MidPlatform/</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; ├── MidPlatformClient.h / .cpp  # 中台 HTTP 客户端（httplib 同步）：GetToken/CheckOrder/FetchTransactionId/GetQRCode</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; # &nbsp; host/path 构造时缓存（SplitUrl 一次），JSON 全部 null 防御</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├── HttpServer/</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; └── NotifyServer.h / .cpp &nbsp; &nbsp; &nbsp; # Webhook 回调接收（httplib::Server，端口 8183，/api/wechat/pay_notify）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; # &nbsp; 先回 200 再处理；解析 outTradeNo/transactionNo/paymentStatus</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├── Service/</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; └── OrderService.h / .cpp &nbsp; &nbsp; &nbsp; # 超时订单巡检（独立线程 + steady_timer，每 10s）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; # &nbsp; 构造注入 PaymentServer*（SUCCESS 兜底补积分）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">└── Config/ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; # 运行时配置（POST_BUILD 从 gateway/Config 拷贝）</span></pre></div></div></div></div></div><div style="position: absolute; height: 0px; width: 1px; border-bottom: 0px solid transparent; top: 330px;"></div><div class="CodeMirror-gutters" style="display: none; height: 330px;"></div></div></div></pre><h2><a name="二系统架构总览" class="md-header-anchor"></a><span>二、系统架构总览</span></h2><div class="md-diagram-panel"><div id="dmermaidChart0" style="font-family: sans-serif"><svg id="mermaidChart0" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100% 150" style="max-width: 100%; height: auto;"><g></g></svg></div></div><p><strong><span>通信原则（8-13 架构决策）</span></strong><span>：</span></p><ul><li><span>服务间通信（gateway ↔ paymentservice）= </span><strong><span>同步 gRPC</span></strong><span>（请求-响应就该同步，不用 MQ 绕圈）</span></li><li><span>外部中台交互 = </span><strong><span>异步 Webhook</span></strong><span>（支付回调本质，废不掉）</span></li><li><span>同步归同步、异步归异步</span></li></ul><p><strong><code>paymentservice</code><span> 内部组件</span></strong><span>（架构图里的简化）：</span></p><ul><li><code>PaymentServer</code><span> gRPC（9001）—— 业务入口</span></li><li><code>MidPlatformClient</code><span> —— 中台 HTTP 客户端（同步阻塞）</span></li><li><code>NotifyServer</code><span>（8183）—— 中台 Webhook 回调接收（独立 HTTP 服务器）</span></li><li><code>OrderService</code><span> —— 超时订单巡检（独立线程 + steady_timer）</span></li><li><span>所有组件共享 MySQL（t_pay_order / t_user_wallet / t_point_flow / t_goods_sku）</span></li></ul><h2><a name="三正向链路创建订单同步-grpc）" class="md-header-anchor"></a><span>三、正向链路：创建订单（同步 gRPC）</span></h2><p><span>入口：</span><code>PaymentServer::CreateOrder</code><span>（PaymentServer.cpp），</span><code>user_id</code><span> 走 gRPC metadata</span>
+<span>（gateway 侧 </span><code>ctx.AddMetadata(&quot;user_id&quot;, ...)</code><span>，服务端 </span><code>GetUserIdFromMetadata</code><span> 取，不放消息体）。</span></p><div class="md-diagram-panel"><svg id="mermaidChart1" width="766" xmlns="http://www.w3.org/2000/svg" height="539" viewBox="-8 -8 766 539" style="height: 579px;"><style>
+:root { --mermaid-font-family: sans-serif}
+:root { --mermaid-alt-font-family: sans-serif}</style><style></style><g></g><g><line id="actor0" x1="75" y1="5" x2="75" y2="530" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="0" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="75" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="75" dy="0">客户端播控器</tspan></text></g><g><line id="actor1" x1="275" y1="5" x2="275" y2="530" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="200" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="275" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="275" dy="0">gateway 网关</tspan></text></g><g><line id="actor2" x1="475" y1="5" x2="475" y2="530" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="400" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="475" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="475" dy="0">paymentservice</tspan></text></g><g><line id="actor3" x1="675" y1="5" x2="675" y2="530" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="600" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="675" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="675" dy="0">支付中台</tspan></text></g><defs><marker id="arrowhead" refX="5" refY="2" markerWidth="6" markerHeight="4" orient="auto"><path d="M 0,0 V 4 L6,2 Z"></path></marker></defs><defs><marker id="crosshead" markerWidth="15" markerHeight="8" orient="auto" refX="16" refY="4"><path fill="black" stroke="#000000" stroke-width="1px" d="M 9,2 V 6 L16,4 Z" style="stroke-dasharray: 0, 0;"></path><path fill="none" stroke="#000000" stroke-width="1px" d="M 0,1 L 6,7 M 6,1 L 0,7" style="stroke-dasharray: 0, 0;"></path></marker></defs><defs><marker id="sequencenumber" refX="15" refY="15" markerWidth="60" markerHeight="40" orient="auto"><circle cx="15" cy="15" r="6"></circle></marker></defs><g><text x="175" y="93" class="messageText" style="text-anchor: middle;">① 创建订单请求</text><line x1="75" y1="100" x2="275" y2="100" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><text x="375" y="128" class="messageText" style="text-anchor: middle;">② gRPC CreateOrder (metadata: user_id)</text><line x1="275" y1="135" x2="475" y2="135" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><rect x="400" y="143" fill="#EDF2AE" stroke="#666" width="150" height="96" rx="0" ry="0" class="note"></rect><text x="396" y="167" class="noteText"><tspan x="416">③ 确定金额</tspan></text><text x="396" y="186" class="noteText"><tspan x="416">goods_id==0 自定义(1元~1万元)</tspan></text><text x="396" y="205" class="noteText"><tspan x="416">否则查 t_goods_sku</tspan></text><text x="396" y="224" class="noteText"><tspan x="416">④ INSERT t_pay_order status=0</tspan></text></g><g><text x="575" y="267" class="messageText" style="text-anchor: middle;">⑤ GetToken OAuth2</text><line x1="475" y1="274" x2="675" y2="274" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><text x="575" y="302" class="messageText" style="text-anchor: middle;">access_token</text><line x1="675" y1="309" x2="475" y2="309" class="messageLine1" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="stroke-dasharray: 3, 3; fill: none;"></line></g><g><text x="575" y="337" class="messageText" style="text-anchor: middle;">⑥ GetQRCode POST /open/transactions</text><line x1="475" y1="344" x2="675" y2="344" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><text x="575" y="372" class="messageText" style="text-anchor: middle;">二维码 URL</text><line x1="675" y1="379" x2="475" y2="379" class="messageLine1" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="stroke-dasharray: 3, 3; fill: none;"></line></g><g><text x="375" y="407" class="messageText" style="text-anchor: middle;">⑦ order_id + qr_code_url + expire_time(300)</text><line x1="475" y1="414" x2="275" y2="414" class="messageLine1" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="stroke-dasharray: 3, 3; fill: none;"></line></g><g><text x="175" y="442" class="messageText" style="text-anchor: middle;">⑧ 客户端展示二维码 (5 分钟有效)</text><line x1="275" y1="449" x2="75" y2="449" class="messageLine1" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="stroke-dasharray: 3, 3; fill: none;"></line></g><g><rect x="0" y="465" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="75" y="497.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="75" dy="0">客户端播控器</tspan></text></g><g><rect x="200" y="465" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="275" y="497.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="275" dy="0">gateway 网关</tspan></text></g><g><rect x="400" y="465" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="475" y="497.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="475" dy="0">paymentservice</tspan></text></g><g><rect x="600" y="465" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="675" y="497.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="675" dy="0">支付中台</tspan></text></g></svg></div><p><strong><span>步骤细节</span></strong><span>：</span></p><figure><table><thead><tr><th><span>步骤</span></th><th><span>逻辑</span></th><th><span>说明</span></th></tr></thead><tbody><tr><td><span>① 定金额</span></td><td><code>goods_id==0</code><span> → 用 </span><code>custom_amount_cents</code><span>（范围 100~1,000,000 分）；否则查 </span><code>t_goods_sku</code><span>（status=1），商品不存在返回 </span><code>NOT_FOUND</code></td><td>&nbsp;</td></tr><tr><td><span>② 写订单</span></td><td><span>单号 </span><code>PAY_&lt;%Y_%m%d_%H_%M_%S&gt;_&lt;userId&gt;</code><span>；INSERT </span><code>t_pay_order</code><span>（status=0，</span><code>amount_cents</code><span> 存分）</span></td><td>&nbsp;</td></tr><tr><td><span>③ 拿 token</span></td><td><code>MidPlatformClient::GetToken</code><span>：POST </span><code>TokenApiUrl</code><span>，OAuth2 client_credentials；失败返回空串 → 上层 </span><code>UNAVAILABLE &quot;获取中台 token 失败&quot;</code></td><td><span>token 未缓存（见缺口清单）</span></td></tr><tr><td><span>④ 拿二维码</span></td><td><code>GetQRCode</code><span>：POST </span><code>PayApiUrl</code><span>，body </span><code>outTradeNo/amount(元)/subject/paymentMethod=2/merchantId/appId/callbackUrl(=NotifyUrl)/expirationTime(+300s)</code><span>；取 </span><code>paymentParams.QrcodeUrl</code></td><td><span>callbackUrl 是下单时传给中台的</span></td></tr><tr><td><span>⑤ 返回</span></td><td><code>order_id + qr_code_url + expire_time(300)</code></td><td>&nbsp;</td></tr></tbody></table></figure><p><strong><span>失败语义</span></strong><span>：商品不存在 </span><code>NOT_FOUND</code><span>；中台/token/二维码失败 </span><code>UNAVAILABLE</code><span>；写库失败 </span><code>INTERNAL</code><span>。</span>
+<span>②已写库但 ③④ 失败时，</span><strong><span>订单留在 status=0</span></strong><span>，由巡检兜底关单（有意设计，不主动删单，保留账目痕迹）。</span></p><h2><a name="四反向链路支付回调异步-webhook）" class="md-header-anchor"></a><span>四、反向链路：支付回调（异步 Webhook）</span></h2><p><span>中台支付成功后按 </span><code>callbackUrl</code><span> 回拨 </span><code>NotifyServer</code><span>（8183，</span><code>POST /api/wechat/pay_notify</code><span>）。</span></p><div class="md-diagram-panel"><svg id="mermaidChart2" width="574" xmlns="http://www.w3.org/2000/svg" height="484" viewBox="-8 -8 574 484" style="height: 524px;"><style>
+:root { --mermaid-font-family: sans-serif}
+:root { --mermaid-alt-font-family: sans-serif}</style><style></style><g></g><g><line id="actor4" x1="75" y1="5" x2="75" y2="475" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="0" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="75" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="75" dy="0">支付中台</tspan></text></g><g><line id="actor5" x1="275" y1="5" x2="275" y2="475" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="200" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="275" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="275" dy="0">NotifyServer 8183</tspan></text></g><g><line id="actor6" x1="475" y1="5" x2="475" y2="475" class="actor-line" stroke-width="0.5px" stroke="#999"></line><rect x="400" y="0" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="475" y="32.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="475" dy="0">ProcessPaymentResult</tspan></text></g><defs><marker id="arrowhead" refX="5" refY="2" markerWidth="6" markerHeight="4" orient="auto"><path d="M 0,0 V 4 L6,2 Z"></path></marker></defs><defs><marker id="crosshead" markerWidth="15" markerHeight="8" orient="auto" refX="16" refY="4"><path fill="black" stroke="#000000" stroke-width="1px" d="M 9,2 V 6 L16,4 Z" style="stroke-dasharray: 0, 0;"></path><path fill="none" stroke="#000000" stroke-width="1px" d="M 0,1 L 6,7 M 6,1 L 0,7" style="stroke-dasharray: 0, 0;"></path></marker></defs><defs><marker id="sequencenumber" refX="15" refY="15" markerWidth="60" markerHeight="40" orient="auto"><circle cx="15" cy="15" r="6"></circle></marker></defs><g><text x="175" y="93" class="messageText" style="text-anchor: middle;">POST /api/wechat/pay_notify</text><line x1="75" y1="100" x2="275" y2="100" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><text x="175" y="128" class="messageText" style="text-anchor: middle;">立即回 200（防中台超时重试）</text><line x1="275" y1="135" x2="75" y2="135" class="messageLine1" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="stroke-dasharray: 3, 3; fill: none;"></line></g><g><rect x="200" y="143" fill="#EDF2AE" stroke="#666" width="150" height="77" rx="0" ry="0" class="note"></rect><text x="196" y="167" class="noteText"><tspan x="216">解析 outTradeNo / transactionNo / paymentStatus</tspan></text><text x="196" y="186" class="noteText"><tspan x="216">全字段 null 防御</tspan></text><text x="196" y="205" class="noteText"><tspan x="216">只处理非空 outTradeNo</tspan></text></g><g><text x="375" y="248" class="messageText" style="text-anchor: middle;">ProcessPaymentResult(order_id, payment_status, transaction_no)</text><line x1="275" y1="255" x2="475" y2="255" class="messageLine0" stroke-width="2" stroke="black" marker-end="url(#arrowhead)" style="fill: none;"></line></g><g><rect x="400" y="284" fill="#EDF2AE" stroke="#666" width="150" height="39" rx="0" ry="0" class="note"></rect><text x="396" y="308" class="noteText"><tspan x="416">单事务：订单=1 + pay_time + 流水号 + 加积分 + 写流水</tspan></text></g><g><rect x="400" y="347" fill="#EDF2AE" stroke="#666" width="150" height="39" rx="0" ry="0" class="note"></rect><text x="396" y="371" class="noteText"><tspan x="416">订单 status 0 转 -1 关单</tspan></text></g><g><line x1="392" y1="263" x2="558" y2="263" class="loopLine"></line><line x1="558" y1="263" x2="558" y2="394" class="loopLine"></line><line x1="392" y1="394" x2="558" y2="394" class="loopLine"></line><line x1="392" y1="263" x2="392" y2="394" class="loopLine"></line><line x1="392" y1="331" x2="558" y2="331" class="loopLine" style="stroke-dasharray: 3, 3;"></line><polygon points="392,263 442,263 442,276 433.6,283 392,283" class="labelBox"></polygon><text x="399.5" y="278" class="labelText"><tspan x="399.5">alt</tspan></text><text x="475" y="275" class="loopText" style="text-anchor: middle;"><tspan x="475">[ status == SUCCESS ]</tspan></text><text x="475" y="343" class="loopText" style="text-anchor: middle;"><tspan x="475">[ status != SUCCESS ]</tspan></text></g><g><rect x="0" y="410" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="75" y="442.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="75" dy="0">支付中台</tspan></text></g><g><rect x="200" y="410" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="275" y="442.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="275" dy="0">NotifyServer 8183</tspan></text></g><g><rect x="400" y="410" fill="#eaeaea" stroke="#666" width="150" height="65" rx="3" ry="3" class="actor"></rect><text x="475" y="442.5" dominant-baseline="central" alignment-baseline="central" class="actor" style="text-anchor: middle; font-size: 14px;"><tspan x="475" dy="0">ProcessPaymentResult</tspan></text></g></svg></div><p><strong><span>NotifyServer 处理（先回 200 再处理）</span></strong><span>：</span></p><ol start='' ><li><span>立即回 200（防中台超时重试）</span></li><li><span>解析 </span><code>outTradeNo / transactionNo / paymentStatus</code><span> —— 全部 </span><code>contains + is_null</code><span> 防御</span></li><li><strong><span>直接传支付状态 + 流水号</span></strong><span>（不再映射成 bool），流水号为空时由 </span><code>ProcessPaymentResult</code><span> 内部查单兜底</span></li></ol><h2><a name="五支付结果处理processpaymentresult核心三入口共用）" class="md-header-anchor"></a><span>五、支付结果处理：ProcessPaymentResult（核心，三入口共用）</span></h2><pre spellcheck="false" class="md-fences md-end-block ty-contain-cm modeLoaded" lang="cpp"><div class="CodeMirror cm-s-inner CodeMirror-wrap" lang="cpp"><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 0px; left: 4px;"><textarea autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position: absolute; bottom: -1em; padding: 0px; width: 1000px; height: 1em; outline: none;"></textarea></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1"><div class="CodeMirror-sizer" style="margin-left: 0px; margin-bottom: 0px; border-right-width: 0px; padding-right: 0px; padding-bottom: 0px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines" role="presentation"><div role="presentation" style="position: relative; outline: none;"><div class="CodeMirror-measure"><pre><span>xxxxxxxxxx</span></pre></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-code" role="presentation" style="text-rendering: auto;"><div class="CodeMirror-activeline" style="position: relative;"><div class="CodeMirror-activeline-background CodeMirror-linebackground"></div><div class="CodeMirror-gutter-background CodeMirror-activeline-gutter" style="left: 0px; width: 0px;"></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-variable">int64_t</span> <span class="cm-def">ProcessPaymentResult</span>(<span class="cm-keyword">const</span> <span class="cm-variable">std::string</span><span class="cm-operator">&amp;</span> <span class="cm-variable">order_id</span>,</span></pre></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp;<span class="cm-variable-3">int</span> <span class="cm-variable">payment_status</span>, <span class="cm-keyword">const</span> <span class="cm-variable">std::string</span><span class="cm-operator">&amp;</span> <span class="cm-variable">transaction_no</span>)</span></pre></div></div></div></div></div><div style="position: absolute; height: 0px; width: 1px; border-bottom: 0px solid transparent; top: 44px;"></div><div class="CodeMirror-gutters" style="display: none; height: 44px;"></div></div></div></pre><p><span>三个入口：gRPC </span><code>NotifyPaid</code><span> / Webhook </span><code>NotifyServer</code><span> / 巡检补积分 —— </span><strong><span>全部走这一个幂等入口</span></strong><span>。</span></p><p><strong><span>执行流程</span></strong><span>：</span></p><pre spellcheck="false" class="md-fences md-end-block ty-contain-cm modeLoaded" lang="" style="break-inside: unset;"><div class="CodeMirror cm-s-inner CodeMirror-wrap" lang=""><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 0px; left: 4px;"><textarea autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position: absolute; bottom: -1em; padding: 0px; width: 1000px; height: 1em; outline: none;"></textarea></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1"><div class="CodeMirror-sizer" style="margin-left: 0px; margin-bottom: 0px; border-right-width: 0px; padding-right: 0px; padding-bottom: 0px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines" role="presentation"><div role="presentation" style="position: relative; outline: none;"><div class="CodeMirror-measure"><pre><span>xxxxxxxxxx</span></pre></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-code" role="presentation" style="text-rendering: auto;"><div class="CodeMirror-activeline" style="position: relative;"><div class="CodeMirror-activeline-background CodeMirror-linebackground"></div><div class="CodeMirror-gutter-background CodeMirror-activeline-gutter" style="left: 0px; width: 0px;"></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">ProcessPaymentResult(order_id, status, tx)</span></pre></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├─ ① 流水号为空？</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; ├─ 是 → CheckOrder 重新查单：</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; │ &nbsp; &nbsp; &nbsp; 查单成功 → 流水号 + 支付状态都重置为查单结果（以查单 API 为准）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; │ &nbsp; &nbsp; &nbsp; 查单失败(ERROR) → 保留传入状态，WARN</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│ &nbsp; &nbsp; └─ 否 → 用传入的 status + tx</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">├─ ② status != SUCCESS → UPDATE 关单（status 0→-1），返回 0</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">│</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;">└─ ③ status == SUCCESS：</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; 查订单（status=0，不存在则幂等返回 0）</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; → 单事务：</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; &nbsp; &nbsp; UPDATE t_pay_order SET status=1, pay_time=NOW(),</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  third_party_no = NULLIF(?, '') &nbsp; &nbsp; &nbsp; -- 流水号原子落库，空自动 NULL</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; &nbsp; &nbsp; WHERE order_id=? AND status=0 &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;  -- 幂等条件</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; &nbsp; &nbsp; UPDATE t_user_wallet SET balance_points=+reward, total_recharged=+reward</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; &nbsp; &nbsp; INSERT t_point_flow(FLOW_RECHARGE, +reward, balance_after=子查询)</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"> &nbsp; &nbsp; → 返回最新余额</span></pre></div></div></div></div></div><div style="position: absolute; height: 0px; width: 1px; border-bottom: 0px solid transparent; top: 418px;"></div><div class="CodeMirror-gutters" style="display: none; height: 418px;"></div></div></div></pre><p><strong><span>幂等设计（三保险）</span></strong><span>：</span></p><ul><li><span>所有 UPDATE 带 </span><code>AND status=0</code><span> —— 重复回调/并发回调只生效一次</span></li><li><span>单事务 —— 订单/钱包/流水要么全成要么全败</span></li><li><code>third_party_no = NULLIF(?, &#39;&#39;)</code><span> —— 流水号空自动写 NULL（不污染对账字段），非空原子写入</span></li></ul><p><strong><span>gRPC NotifyPaid 调用</span></strong><span>：</span><code>OrderNotifyPush</code><span> 无流水号字段（proto 确认）→ 传空串，内部查单兜底。</span></p><h2><a name="六兜底链路超时订单巡检独立线程）" class="md-header-anchor"></a><span>六、兜底链路：超时订单巡检（独立线程）</span></h2><p><code>OrderService</code><span> 独立线程 + </span><code>steady_timer</code><span>，</span><strong><span>每 10s</span></strong><span> 巡检，构造注入 </span><code>PaymentServer*</code><span>（SUCCESS 兜底补积分）。</span></p><div class="md-diagram-panel"><div id="dmermaidChart3" style="font-family: sans-serif"><svg id="mermaidChart3" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100% 150" style="max-width: 100%; height: auto;"><g></g></svg></div></div><p><strong><span>巡检 SQL</span></strong><span>：</span></p><pre spellcheck="false" class="md-fences md-end-block ty-contain-cm modeLoaded" lang="sql"><div class="CodeMirror cm-s-inner CodeMirror-wrap" lang="sql"><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 0px; left: 4px;"><textarea autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position: absolute; bottom: -1em; padding: 0px; width: 1000px; height: 1em; outline: none;"></textarea></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1"><div class="CodeMirror-sizer" style="margin-left: 0px; margin-bottom: 0px; border-right-width: 0px; padding-right: 0px; padding-bottom: 0px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines" role="presentation"><div role="presentation" style="position: relative; outline: none;"><div class="CodeMirror-measure"><pre><span>xxxxxxxxxx</span></pre></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-code" role="presentation" style="text-rendering: auto;"><div class="CodeMirror-activeline" style="position: relative;"><div class="CodeMirror-activeline-background CodeMirror-linebackground"></div><div class="CodeMirror-gutter-background CodeMirror-activeline-gutter" style="left: 0px; width: 0px;"></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-comment">-- 查 5 分钟内未支付订单</span></span></pre></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-keyword">SELECT</span> order_id <span class="cm-keyword">FROM</span> t_pay_order</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-keyword">WHERE</span> status = <span class="cm-number">0</span> <span class="cm-keyword">AND</span> create_time &lt;= DATE_SUB(NOW(), INTERVAL <span class="cm-number">5</span> MINUTE)</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-keyword">LIMIT</span> <span class="cm-number">50</span>;</span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span cm-text="">​</span></span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-comment">-- 清理 3 天前已关闭订单</span></span></pre><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-keyword">DELETE</span> <span class="cm-keyword">FROM</span> t_pay_order <span class="cm-keyword">WHERE</span> status = -<span class="cm-number">1</span> <span class="cm-keyword">AND</span> create_time &lt;= DATE_SUB(NOW(), INTERVAL <span class="cm-number">3</span> DAY);</span></pre></div></div></div></div></div><div style="position: absolute; height: 0px; width: 1px; border-bottom: 0px solid transparent; top: 154px;"></div><div class="CodeMirror-gutters" style="display: none; height: 154px;"></div></div></div></pre><p><strong><span>分支处理</span></strong><span>：</span></p><figure><table><thead><tr><th><span>中台状态</span></th><th><span>处理</span></th><th><span>新状态</span></th></tr></thead><tbody><tr><td><span>UNPAID</span></td><td><span>确认没付 → 关单</span></td><td><span>-1</span></td></tr><tr><td><span>ERROR（中台异常/断网）</span></td><td><span>挂起待人工</span></td><td><span>-2</span></td></tr><tr><td><span>SUCCESS（回调丢失）</span></td><td><strong><code>ProcessPaymentResult(order_id, status, tx)</code><span> 补积分</span></strong><span>（8-14 已实现）</span></td><td><span>1</span></td></tr></tbody></table></figure><blockquote><p><span>⚠️ 巡检已通过 CheckOrder 拿到流水号，直接传入，不触发 ProcessPaymentResult 内部重复查单。</span></p></blockquote><h2><a name="七订单状态机" class="md-header-anchor"></a><span>七、订单状态机</span></h2><div class="md-diagram-panel"><div id="dmermaidChart4" style="font-family: sans-serif"><svg id="mermaidChart4" width="100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100% 150" style="max-width: 100%; height: auto;"><style>
+:root { --mermaid-font-family: sans-serif}
+:root { --mermaid-alt-font-family: sans-serif}</style><style></style><g></g></svg></div></div><figure><table><thead><tr><th><span>status</span></th><th><span>含义</span></th><th><span>转移条件</span></th></tr></thead><tbody><tr><td><span>0</span></td><td><span>待支付</span></td><td><span>初始状态（CreateOrder 写库）</span></td></tr><tr><td><span>1</span></td><td><span>已支付</span></td><td><span>Webhook 成功回调 / 巡检发现已付补积分</span></td></tr><tr><td><span>-1</span></td><td><span>已关闭</span></td><td><span>巡检确认未支付 或 回调失败；3 天后物理删除</span></td></tr><tr><td><span>-2</span></td><td><span>挂起</span></td><td><span>巡检查单异常（中台宕机），待人工核实</span></td></tr></tbody></table></figure><h2><a name="八midplatformclient-api-一览" class="md-header-anchor"></a><span>八、MidPlatformClient API 一览</span></h2><figure><table><thead><tr><th><span>方法</span></th><th><span>请求</span></th><th><span>说明</span></th></tr></thead><tbody><tr><td><code>GetToken()</code></td><td><span>POST </span><code>TokenApiUrl</code><span>，form 表单</span></td><td><span>OAuth2 client_credentials；URL 在构造函数从 GlobalConfig 解析缓存（host/path 成员）</span></td></tr><tr><td><code>CheckOrder(order_id, &amp;transaction_no)</code></td><td><span>GET </span><code>PayApiUrl/order_id</code><span>，Bearer token</span></td><td><span>返回 paymentStatus，transaction_no 输出流水号；未支付订单 transactionNo=null 是正常语义（null 防御已处理）</span></td></tr><tr><td><code>FetchTransactionId(order_id)</code></td><td><span>同上</span></td><td><span>回调缺失流水号时的补救查询</span></td></tr><tr><td><code>GetQRCode(token, order_id, price_cents)</code></td><td><span>POST </span><code>PayApiUrl</code><span>，JSON + Bearer</span></td><td><span>返回 </span><code>paymentParams.QrcodeUrl</code></td></tr></tbody></table></figure><p><span>实现要点（8-14 优化后）：</span></p><ul><li><strong><span>host/path 构造时缓存</span></strong><span>：构造函数 </span><code>SplitUrl</code><span> 一次，成员只读，gRPC 多线程安全</span></li><li><strong><span>httplib::Client 每次局部新建</span></strong><span>：httplib Client 非线程安全，不做成员缓存</span></li><li><strong><span>timeout</span></strong><span>：</span><code>set_connection_timeout(5, 0)</code><span> 5 秒</span></li><li><strong><span>JSON 全字段 null 防御</span></strong><span>：</span><code>contains + is_null</code><span>（</span><code>j.value()</code><span> 对&quot;存在但为 null&quot;抛 302，已全部替换）</span></li><li><span>⚠️ 缺口：</span><strong><span>token 不缓存</span></strong><span>，每次调用重新请求（见缺口清单）</span></li></ul><h2><a name="九配置项gatewayconfigserverconfigjson-→-wechatpay-节点）" class="md-header-anchor"></a><span>九、配置项（gateway/Config/server_config.json → WechatPay 节点）</span></h2><p><span>POST_BUILD 会把 </span><code>gateway/Config</code><span> 拷到 paymentservice 运行目录，</span><strong><span>改配置需重新 build</span></strong><span>。</span></p><figure><table><thead><tr><th><span>配置 key</span></th><th><span>用途</span></th><th><span>当前值（stg）</span></th></tr></thead><tbody><tr><td><code>NotifyUrl</code></td><td><span>Webhook 回调地址（中台下单时透传）</span></td><td><code>http://175.178.36.122:8182/api/wechat/pay_notify</code></td></tr><tr><td><code>MerchantId</code></td><td><span>商户号（透传给中台）</span></td><td><code>1725620235</code></td></tr><tr><td><code>AppId</code></td><td><span>应用 ID（透传给中台）</span></td><td><code>wxc8d0411c217a8b4c</code></td></tr><tr><td><code>PayApiUrl</code></td><td><span>中台下单/查单地址</span></td><td><code>https://api.stg.playlink.games/open/transactions</code></td></tr><tr><td><code>TokenApiUrl</code></td><td><span>中台 OAuth2 token 地址</span></td><td><code>https://api.stg.playlink.games/connect/token</code></td></tr><tr><td><code>ClientId</code></td><td><span>OAuth2 client_id</span></td><td><code>3a214bed97c0b7222f62e6df4d2f7993</code></td></tr><tr><td><code>ClientSecret</code></td><td><span>OAuth2 client_secret</span></td><td><code>3a214bed97bec75bfe8bbc46e4262b60</code></td></tr></tbody></table></figure><blockquote><p><span>⚠️ </span><strong><span>端口不一致（待修）</span></strong><span>：</span><code>NotifyUrl</code><span> 是 </span><strong><span>8182</span></strong><span>（gateway HttpPort），但 </span><code>NotifyServer</code><span> 实际监听 </span><strong><span>8183</span></strong><span>（main.cpp 硬编码）。真实链路下中台回调打到 8182 无人认领。本地手动 curl 到 8183 不受影响（已用模拟回调验证通过）。部署时需统一。</span>
+<span>⚠️ 历史坑：Global.cpp 曾读 </span><code>&quot;TokenUrl&quot;</code><span>，配置实际是 </span><code>&quot;TokenApiUrl&quot;</code><span>（已修）。配置 key 以本表为准。</span>
+<span>⚠️ Mysql.Port 是 </span><strong><span>33060</span></strong><span>（X DevAPI 端口，SqlExec 走 mysqlx），不是 3306，勿整体替换配置。</span></p></blockquote><h2><a name="十错误码--失败映射" class="md-header-anchor"></a><span>十、错误码 / 失败映射</span></h2><figure><table><thead><tr><th><span>gRPC 状态码</span></th><th><span>场景</span></th><th><span>gateway 侧映射</span></th></tr></thead><tbody><tr><td><code>INVALID_ARGUMENT</code></td><td><span>缺 user_id metadata / 金额超范围 / 消费参数无效</span></td><td><span>ERR_SERVER_INTERNAL</span></td></tr><tr><td><code>NOT_FOUND</code></td><td><span>商品不存在 / 钱包不存在</span></td><td><span>ERR_CREATE_ORDER_FAILED</span></td></tr><tr><td><code>FAILED_PRECONDITION</code></td><td><span>积分不足</span></td><td><span>ERR_INSUFFICIENT_POINTS</span></td></tr><tr><td><code>UNAVAILABLE</code></td><td><span>中台 token/二维码/查单失败</span></td><td><span>ERR_SERVER_INTERNAL</span></td></tr><tr><td><code>INTERNAL</code></td><td><span>写库/事务失败</span></td><td><span>ERR_SERVER_INTERNAL</span></td></tr><tr><td><code>OK</code></td><td><span>成功</span></td><td><span>—</span></td></tr></tbody></table></figure><h2><a name="十一日志排查指南" class="md-header-anchor"></a><span>十一、日志排查指南</span></h2><p><span>日志文件：</span><code>logs/gateway_YYYYMMDD.log</code><span>（LogManager 统一前缀，含 paymentservice 输出）。</span></p><figure><table><thead><tr><th><span>关键日志</span></th><th><span>含义</span></th></tr></thead><tbody><tr><td><code>{&quot;event&quot;:&quot;创建订单成功&quot;,&quot;order_id&quot;:&quot;...&quot;}</code></td><td><span>下单全链路成功</span></td></tr><tr><td><code>[MidPlatform] TokenApiUrl 未配置</code></td><td><span>运行目录配置缺失/未重编（POST_BUILD 未拷）</span></td></tr><tr><td><code>{&quot;event&quot;:&quot;收到支付回调&quot;,&quot;order_id&quot;:&quot;...&quot;,&quot;transactionNo&quot;:...}</code></td><td><span>Webhook 回调到达并解析成功</span></td></tr><tr><td><code>{&quot;event&quot;:&quot;支付完成&quot;,&quot;order_id&quot;:&quot;...&quot;,&quot;reward&quot;:...,&quot;balance&quot;:...}</code></td><td><span>加积分成功（余额为最新值）</span></td></tr><tr><td><code>[MidPlatform] 补流水号查单失败</code></td><td><span>流水号为空且查单失败（不影响主流程）</span></td></tr><tr><td><code>{&quot;event&quot;:&quot;巡检关单/挂起/补积分&quot;}</code></td><td><span>巡检兜底三分支触发</span></td></tr><tr><td><code>E0000 ... invalid UTF-8 ... create_time</code></td><td><span>DATETIME 列未 DATE_FORMAT（已修，复发即查 SQL）</span></td></tr><tr><td><code>[NotifyServer] 解析回调失败</code></td><td><span>回调 JSON 解析异常（null 防御已覆盖，仍报则结构变化）</span></td></tr></tbody></table></figure><h2><a name="十二已知缺口清单按优先级）" class="md-header-anchor"></a><span>十二、已知缺口清单（按优先级）</span></h2><figure><table><thead><tr><th><span>#</span></th><th><span>缺口</span></th><th><span>状态</span></th><th><span>影响</span></th><th><span>建议</span></th></tr></thead><tbody><tr><td><span>1</span></td><td><del><span>巡检 SUCCESS 不补积分</span></del></td><td><span>✅ 已修（8-14）</span></td><td><span>回调丢失 → 付钱不到账</span></td><td><code>ProcessPaymentResult(order_id, SUCCESS, tx)</code><span> 兜底</span></td></tr><tr><td><span>2</span></td><td><strong><span>NotifyUrl 端口 8182 vs NotifyServer 8183 不一致</span></strong></td><td><span>⚠️ 待修</span></td><td><span>真实链路回调打到 8182 无人认领</span></td><td><span>统一端口（NotifyUrl 改 8183，或 NotifyServer 改 8182），配置化</span></td></tr><tr><td><span>3</span></td><td><span>回调无签名校验</span></td><td><span>待做</span></td><td><span>伪造回调可白嫖积分（stg 可忍，生产必须加）</span></td><td><span>与中台约定签名算法（HMAC/token header）</span></td></tr><tr><td><span>4</span></td><td><span>token 不缓存</span></td><td><span>待做</span></td><td><span>每次下单/巡检/补流水号多一次网络往返</span></td><td><span>mutex + 过期时间缓存</span></td></tr><tr><td><span>5</span></td><td><span>巡检同步串行查单</span></td><td><span>待做</span></td><td><span>50 单 = 50 次 GetToken，串行阻塞巡检线程</span></td><td><span>线程池并发 + 巡检 token 复用一次</span></td></tr><tr><td><span>6</span></td><td><span>回调端口/监听地址硬编码</span></td><td><span>待做</span></td><td><span>部署不灵活</span></td><td><span>配置化（NotifyPort）</span></td></tr><tr><td><span>7</span></td><td><span>金额用浮点 </span><code>price_cents/100.0</code></td><td><span>待做</span></td><td><span>大额浮点精度隐患</span></td><td><span>整数分 + 格式化</span></td></tr><tr><td><span>8</span></td><td><span>status=1 且 third_party_no IS NULL 的订单不补号</span></td><td><span>待做</span></td><td><span>补号时查单恰好失败 → 对账缺号</span></td><td><span>&quot;补号专项任务&quot;（可选）</span></td></tr></tbody></table></figure><h2><a name="十三本地联调方法模拟回调不依赖中台）" class="md-header-anchor"></a><span>十三、本地联调方法（模拟回调，不依赖中台）</span></h2><p><span>中台回调发到公网服务器而非本地，局域网测试收不到真回调 —— </span><strong><span>用 curl 模拟回调即可完整测试回调链路</span></strong><span>：</span></p><pre spellcheck="false" class="md-fences md-end-block ty-contain-cm modeLoaded" lang="cmd"><div class="CodeMirror cm-s-inner CodeMirror-wrap" lang="cmd"><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 0px; left: 4px;"><textarea autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" style="position: absolute; bottom: -1em; padding: 0px; width: 1000px; height: 1em; outline: none;"></textarea></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1"><div class="CodeMirror-sizer" style="margin-left: 0px; margin-bottom: 0px; border-right-width: 0px; padding-right: 0px; padding-bottom: 0px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines" role="presentation"><div role="presentation" style="position: relative; outline: none;"><div class="CodeMirror-measure"><pre><span>xxxxxxxxxx</span></pre></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-code" role="presentation" style="text-rendering: auto;"><div class="CodeMirror-activeline" style="position: relative;"><div class="CodeMirror-activeline-background CodeMirror-linebackground"></div><div class="CodeMirror-gutter-background CodeMirror-activeline-gutter" style="left: 0px; width: 0px;"></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation" style="padding-right: 0.1px;"><span class="cm-identifier">curl</span> <span class="cm-operator">-</span><span class="cm-identifier">X</span> <span class="cm-identifier">POST</span> <span class="cm-identifier">http</span><span class="cm-operator">://</span><span class="cm-number">127.0.0.1</span><span class="cm-operator">:</span><span class="cm-number">8183</span><span class="cm-operator">/</span><span class="cm-identifier">api</span><span class="cm-operator">/</span><span class="cm-identifier">wechat</span><span class="cm-operator">/</span><span class="cm-identifier">pay_notify</span> <span class="cm-operator">-</span><span class="cm-builtin">H</span> <span class="cm-string">"Content-Type: application/json"</span> <span class="cm-operator">-</span><span class="cm-identifier">d</span> <span class="cm-string">"{\"</span><span class="cm-identifier">outTradeNo</span><span class="cm-error">\</span><span class="cm-string">":\"</span><span class="cm-identifier">PAY_xxx</span><span class="cm-error">\</span><span class="cm-string">",\"</span><span class="cm-identifier">paymentStatus</span><span class="cm-error">\</span><span class="cm-string">":2,\"</span><span class="cm-identifier">transactionNo</span><span class="cm-error">\</span><span class="cm-string">":\"</span><span class="cm-identifier">STG20260814001</span><span class="cm-error">\</span><span class="cm-string">"}"</span></span></pre></div></div></div></div></div></div><div style="position: absolute; height: 0px; width: 1px; border-bottom: 0px solid transparent; top: 44px;"></div><div class="CodeMirror-gutters" style="display: none; height: 44px;"></div></div></div></pre><ul><li><code>paymentStatus: 2</code><span> = SUCCESS → 加积分 + 流水号落库</span></li><li><code>paymentStatus: 0</code><span> = UNPAID → 关单</span></li><li><span>去掉 </span><code>transactionNo</code><span> → 触发内部查单兜底（需中台可达）</span></li><li><span>验证点：日志 </span><code>收到支付回调</code><span> + </span><code>支付完成</code><span>，DB 订单 status=1 / third_party_no / pay_time</span></li></ul><blockquote><p><span>注意：</span><code>curl</code><span> 命令在 cmd 用 </span><code>\&quot;</code><span> 转义 JSON 引号；PowerShell 用 </span><code>curl.exe</code><span> + 单引号；bash 用单引号 + </span><code>\</code><span> 续行。</span></p></blockquote><h2><a name="十四架构决策备忘面试口径）" class="md-header-anchor"></a><span>十四、架构决策备忘（面试口径）</span></h2><ol start='' ><li><strong><span>两种异步分离</span></strong><span>：服务间同步 gRPC，外部中台异步 Webhook —— 同步归同步、异步归异步</span></li><li><strong><span>幂等三保险</span></strong><span>：</span><code>status</code><span> 条件更新 + 单事务 + 巡检兜底</span></li><li><strong><span>先回 200 再处理</span></strong><span>：回调响应与业务处理解耦，中台不重试</span></li><li><strong><span>以查单 API 为最终依据</span></strong><span>：流水号为空时查单重置状态+流水号（查单失败保留传入，防误降级）</span></li><li><strong><span>账目不删只关</span></strong><span>：失败订单置 -1/-2 保留痕迹，3 天后才物理清理</span></li><li><strong><span>user_id 走 gRPC metadata</span></strong><span>：业务消息体保持干净，鉴权信息由网关注入</span></li><li><strong><span>thread_local SqlExec</span></strong><span>：每 gRPC worker 线程独立连接池，无锁无共享（项目明确不改为全局共享）</span></li><li><strong><span>JSON null 防御铁律</span></strong><span>：中台/回调响应字段为 null 是常态语义，所有解析 </span><code>contains + is_null</code><span>，禁止裸 </span><code>.value()</code></li></ol></div>
+</body>
+</html>
