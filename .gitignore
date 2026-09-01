@@ -177,3 +177,6 @@ calibration_*.npy
 datasets_back
 runs
 datasets
+
+# WorkBuddy local project data (memory/state, not source)
+.workbuddy/
