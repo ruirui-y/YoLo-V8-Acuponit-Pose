@@ -1,12 +1,17 @@
 """
-一键准备 RGB / RGBD Pose 数据集：
+一键准备 RGB / RGBD Pose 数据集（Raw Depth 版，第4通道直接来自 depth_<timestamp>.npy）：
 
-  1. 融合：将 RGB 与 uint8 Depth 按时间戳配对，合成为 YOLO RGBD 的 4 通道 PNG
-     （复用 scripts/fuse_rgb_depth.py 的 fuse_pair，第 4 通道 = RGB 三通道均值）
+  1. 融合：将 RGB（color_<timestamp>.jpg/png）与原始 Depth（depth_<timestamp>.npy, uint16）
+     按时间戳配对，合成为 YOLO RGBD 的 4 通道 PNG。
+     - 第4通道（alpha=Depth）：clip(depth, low, high) 后线性映射 low->1 / high->255，
+       中间严格线性单调；invalid（depth==0 或 65535）-> 第4通道=0。
+     - RGB 前三通道逐像素保持不变（直接取自原始 RGB 的 BGR）。
+     - 不使用 depth_show 伪彩图与 BGR2GRAY（伪彩非单调，转灰度会破坏真实 Depth 远近关系）。
   2. 划分：按时间戳从早到晚排序，70/15/15 切分为 train/val/test（不随机）
   3. 生成 RGB 与 RGBD 共用的 splits.json（单一数据源，保证两边样本编号完全一致）
   4. 复制图像/标签到 dataset/<class>/{rgb,rgbd}/{images,labels}/{train,val,test}
   5. 生成 data_rgb.yaml 与 data_rgbd.yaml（nc / kpt_shape 由数据推断，不写死）
+  6. 逐样本严格校验：4ch uint8 / RGB 前三通道不变 / ch4 对 clipped raw depth Pearson·Spearman≈1
 
 RGB 与 RGBD 严格共用同一份 splits.json 与同一份 labels，仅图像通道不同（3ch vs 4ch），
 满足「相同 train/val/test 样本、只允许输入通道不同」的对照实验约束。
@@ -15,29 +20,30 @@ RGB 与 RGBD 严格共用同一份 splits.json 与同一份 labels，仅图像�
 
 用法:
 python YJJ_Pose_Scripts/01_data/prepare_pose_rgbd_dataset.py \
-    --rgb_dir    "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image" \
-    --depth_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_depth" \
-    --label_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/labels" \
-    --output_dir "H:/YJJ/Yolo_RGBD/Resource/session1_200146" \
+    --rgb_dir        "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image" \
+    --depth_npy_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_npy" \
+    --label_dir      "H:/YJJ/Yolo_RGBD/Resource/session1_200146/labels" \
+    --output_dir     "H:/YJJ/Yolo_RGBD/Resource/session1_200146" \
     --class_name hand \
+    --depth_low 1100 \
+    --depth_high 1850 \
     --force            # 可选：允许成功后覆盖已有输出（默认拒绝覆盖非空结果）
 """
 import argparse
 import json
 import math
 import shutil
-import sys
 from pathlib import Path
 
-# 复用原融合脚本的核心函数（RGB 读 + 深度读 + 4 通道构造 + uint8 归一化）
-# 本文件位于 <repo>/YJJ_Pose_Scripts/01_data/，向上两级为项目根，scripts 在其下。
+import cv2
+import numpy as np
+
+# 本文件自包含 raw-npy 融合逻辑，不再依赖 scripts/fuse_rgb_depth.py 的 fuse_pair
+# （fuse_pair 走 depth_show 伪彩图 + BGR2GRAY，会破坏真实 Depth 远近单调关系，已弃用）。
 _SCRIPT_DIR = Path(__file__).resolve().parent          # .../YJJ_Pose_Scripts/01_data
-_REPO_ROOT = _SCRIPT_DIR.parents[1]                   # .../yolov8_rgbd_detection
-sys.path.insert(0, str(_REPO_ROOT / "scripts"))
-from fuse_rgb_depth import fuse_pair  # noqa: E402
 
 RGB_PREFIX = "color_"
-DEPTH_PREFIX = "depth_show"
+DEPTH_PREFIX = "depth_"
 
 
 def ts_of(name: str, prefix: str):
@@ -51,6 +57,126 @@ def ts_of(name: str, prefix: str):
 def collect(dir_path: Path, prefix: str):
     return {ts_of(p.name, prefix): p for p in dir_path.iterdir()
             if p.is_file() and ts_of(p.name, prefix) is not None}
+
+
+def fuse_pair_rawdepth(rgb_path: Path, npy_path: Path, out_path: Path, low: float, high: float):
+    """Raw-npy 融合：RGB 三通道逐像素保留，第4通道 = clip(depth,low,high) 线性映射 low->1/high->255。
+
+    不使用 depth_show 伪彩图与 BGR2GRAY（伪彩非单调，转灰度会破坏真实 Depth 远近关系）。
+    - invalid (depth==0 或 65535) -> 第4通道 = 0
+    - valid   -> ch4 = 1 + (clip(d,low,high)-low) * 254/(high-low)，uint8 截断
+    - RGB 前三通道 = 原始 RGB 的 BGR 逐字节不变
+    - 严格按 timestamp 配对；depth npy 的 H/W 必须与 RGB 一致，否则抛错。
+    """
+    if not (high > low):
+        raise ValueError("depth_high 必须严格大于 depth_low")
+    color = cv2.imread(str(rgb_path), cv2.IMREAD_UNCHANGED)
+    if color is None:
+        raise RuntimeError(f"读 RGB 失败: {rgb_path}")
+    if color.ndim == 2:
+        color = cv2.cvtColor(color, cv2.COLOR_GRAY2BGR)
+    if color.ndim != 3 or color.shape[2] < 3:
+        raise RuntimeError(f"RGB 通道数异常(期望>=3): {rgb_path} shape={color.shape}")
+    bgr = color[:, :, :3].copy()  # 原始 RGB 像素逐字节保留 (BGR 顺序)
+
+    d = np.load(str(npy_path))
+    if d.ndim == 3:
+        d = d[..., 0]
+    if d.ndim != 2:
+        raise RuntimeError(f"Depth npy 维度异常(期望 2D): {npy_path} shape={d.shape}")
+    d = d.astype(np.int64)
+    if d.shape[:2] != bgr.shape[:2]:
+        raise RuntimeError(
+            f"Depth npy 尺寸与 RGB 不一致: depth={d.shape[:2]} rgb={bgr.shape[:2]} ({npy_path})")
+
+    invalid = (d == 0) | (d == 65535)
+    c = np.clip(d.astype(np.float64), low, high)
+    scale = 254.0 / (high - low)
+    ch4 = np.zeros(d.shape, dtype=np.float64)
+    ch4[~invalid] = 1.0 + (c[~invalid] - low) * scale
+    ch4 = np.clip(ch4, 0, 255).astype(np.uint8)
+
+    out = np.dstack([bgr, ch4])  # BGRA, (H,W,4), uint8
+    if not cv2.imwrite(str(out_path), out):
+        raise RuntimeError(f"写 PNG 失败: {out_path}")
+
+
+def _pearson(a, b):
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    am = a - a.mean()
+    bm = b - b.mean()
+    denom = np.sqrt((am * am).sum() * (bm * bm).sum())
+    return float((am * bm).sum() / denom) if denom > 0 else float("nan")
+
+
+def _rankdata_mean(a):
+    """平均秩（正确处理并列）：严格单调关系下 Spearman 应为 1。
+
+    argsort().argsort() 会给并列值分配假的递秩序号，导致 Spearman 被低估；
+    这里对并列组取平均秩，符合 Spearman 的标准定义。
+    """
+    a = np.asarray(a, dtype=np.float64)
+    n = a.size
+    if n == 0:
+        return a
+    order = a.argsort(kind="mergesort")
+    ranks = np.arange(1, n + 1, dtype=np.float64)
+    sorted_a = a[order]
+    first = np.ones(n, dtype=bool)
+    if n > 1:
+        first[1:] = sorted_a[1:] != sorted_a[:-1]
+    start_idx = np.flatnonzero(first)
+    for i in range(start_idx.size):
+        s = start_idx[i]
+        e = start_idx[i + 1] if i + 1 < start_idx.size else n
+        ranks[order[s:e]] = (s + e + 1) / 2.0  # 并列组平均秩
+    return ranks
+
+
+def _spearman(a, b):
+    return _pearson(_rankdata_mean(a), _rankdata_mean(b))
+
+
+def verify_fused_png(rgb_path: Path, npy_path: Path, png_path: Path, low: float, high: float):
+    """生成后逐样本严格校验（断言失败即 RuntimeError 冒泡）：
+
+    - 输出为 (H,W,4) uint8
+    - RGB 前三通道与原始 RGB BGR 逐像素完全一致
+    - 第4通道与“对 clipped raw depth 的确定性映射”逐像素完全一致（间接保证 Pearson/Spearman≈1）
+    - 在 valid 像素上报告 Pearson / Spearman（应≈1）
+    """
+    arr = cv2.imread(str(png_path), cv2.IMREAD_UNCHANGED)
+    assert arr is not None, f"读回 PNG 失败: {png_path}"
+    assert arr.ndim == 3 and arr.shape[2] == 4, f"输出非 4 通道: {png_path} shape={arr.shape}"
+    assert arr.dtype == np.uint8, f"输出非 uint8: {png_path} dtype={arr.dtype}"
+
+    color = cv2.imread(str(rgb_path), cv2.IMREAD_UNCHANGED)
+    bgr = color[:, :, :3] if (color.ndim == 3) else cv2.cvtColor(color, cv2.COLOR_GRAY2BGR)
+    assert arr[:, :, :3].shape == bgr.shape, "RGB 尺寸不匹配"
+    assert np.array_equal(arr[:, :, :3], bgr), "RGB 前三通道与原始 RGB 不一致"
+
+    d = np.load(str(npy_path))
+    if d.ndim == 3:
+        d = d[..., 0]
+    d = d.astype(np.int64)
+    invalid = (d == 0) | (d == 65535)
+    c = np.clip(d.astype(np.float64), low, high)
+    scale = 254.0 / (high - low)
+    expected = np.zeros(d.shape, dtype=np.float64)
+    expected[~invalid] = 1.0 + (c[~invalid] - low) * scale
+    expected = np.clip(expected, 0, 255).astype(np.uint8)
+
+    ch4 = arr[:, :, 3]
+    assert np.array_equal(ch4, expected), "第4通道与确定性映射不一致（Depth 保真度校验失败）"
+
+    valid_mask = ~invalid
+    if valid_mask.any() and (high > low):
+        r = _pearson(ch4[valid_mask], c[valid_mask])
+        s = _spearman(ch4[valid_mask], c[valid_mask])
+        print(f"[校验] ch4 vs clipped raw depth  Pearson={r:.6f} Spearman={s:.6f} "
+              f"(valid 像素={int(valid_mask.sum())})")
+        assert r > 0.999 and s > 0.999, f"Pearson/Spearman 过低: P={r} S={s}"
 
 
 def validate_labels(label_map: dict):
@@ -187,22 +313,28 @@ def build_yaml(yaml_path: Path, class_name: str, kpt: int, channels: int, rgbd: 
 
 
 def main():
-    ap = argparse.ArgumentParser(description="一键准备 RGB/RGBD Pose 数据集")
-    ap.add_argument("--rgb_dir", required=True, help="RGB 图像目录（color_<timestamp>.jpg）")
-    ap.add_argument("--depth_dir", required=True, help="Depth 图像目录（depth_show<timestamp>.jpg）")
+    ap = argparse.ArgumentParser(description="一键准备 RGB/RGBD Pose 数据集（Raw Depth 版）")
+    ap.add_argument("--rgb_dir", required=True, help="RGB 图像目录（color_<timestamp>.jpg/png）")
+    ap.add_argument("--depth_npy_dir", required=True, help="Raw Depth NPY 目录（depth_<timestamp>.npy, uint16）")
     ap.add_argument("--label_dir", required=True, help="标签目录（color_<timestamp>.txt）")
     ap.add_argument("--output_dir", required=True, help="输出根目录（内部生成 out/ 与 dataset/<class>/）")
     ap.add_argument("--class_name", default="hand", help="类别名，默认 hand")
+    ap.add_argument("--depth_low", type=float, default=1100.0, help="Depth clip 下界(mm)，可编辑")
+    ap.add_argument("--depth_high", type=float, default=1850.0, help="Depth clip 上界(mm)，可编辑")
     ap.add_argument("--force", action="store_true",
                     help="允许成功后覆盖已有输出；不传则在检测到非空输出时拒绝并停止")
     args = ap.parse_args()
 
     rgb_dir = Path(args.rgb_dir)
-    depth_dir = Path(args.depth_dir)
+    depth_dir = Path(args.depth_npy_dir)
     label_dir = Path(args.label_dir)
     out_root = Path(args.output_dir)
     cls = args.class_name.strip() or "hand"
     force = bool(args.force)
+    low = float(args.depth_low)
+    high = float(args.depth_high)
+    if not (high > low):
+        raise RuntimeError(f"depth_high({high}) 必须严格大于 depth_low({low})")
 
     # === 输出目录保护：默认不允许覆盖非空结果 ===
     final_out = out_root / "out"
@@ -231,7 +363,9 @@ def main():
         fused_dir = staging_root / "out"
         fused_dir.mkdir(parents=True, exist_ok=True)
         rgb_map = collect(rgb_dir, RGB_PREFIX)
-        depth_map = collect(depth_dir, DEPTH_PREFIX)
+        depth_map = {ts_of(p.name, DEPTH_PREFIX): p for p in depth_dir.iterdir()
+                     if p.is_file() and p.suffix.lower() == ".npy"
+                     and ts_of(p.name, DEPTH_PREFIX) is not None}
         label_map = collect(label_dir, RGB_PREFIX)
 
         # 严格样本配对检查：RGB / Depth / Label 必须一一对应，任何缺失立即失败
@@ -260,16 +394,24 @@ def main():
         usable = sorted(set(rgb_map) & set(depth_map) & set(label_map))
         print(f"[统计] RGB={len(rgb_map)} Depth={len(depth_map)} Label={len(label_map)} 三集合一致={len(usable)}")
         for ts in usable:
+            out_png = fused_dir / f"{RGB_PREFIX}{ts}.png"
             try:
-                fuse_pair(rgb_map[ts], depth_map[ts], fused_dir / f"{RGB_PREFIX}{ts}.png", depth_type="uint8")
+                fuse_pair_rawdepth(rgb_map[ts], depth_map[ts], out_png, low, high)
             except Exception as e:  # noqa: BLE001
                 print(f"[错误] 融合失败，样本 ID={ts}: {e}")
                 raise RuntimeError(f"样本 {ts} 融合失败，已中止数据准备") from e
+            # 生成后逐样本严格校验：4ch uint8 / RGB 前三通道不变 / ch4 对 clipped raw depth 单调
+            try:
+                verify_fused_png(rgb_map[ts], depth_map[ts], out_png, low, high)
+            except AssertionError as e:  # noqa: BLE001
+                print(f"[错误] 融合产物校验失败，样本 ID={ts}: {e}")
+                raise RuntimeError(f"样本 {ts} 融合产物校验失败，已中止数据准备") from e
         print(f"[融合] 已写出 4 通道 PNG: {len(usable)}/{len(usable)} -> {fused_dir}")
 
         # 融合产物强制校验：期望 RGBD ID 集合 == 实际生成的 PNG ID 集合
         expected_ids = set(usable)
-        actual_ids = {p.stem for p in fused_dir.glob(f"{RGB_PREFIX}*.png")}
+        actual_ids = {p.stem[len(RGB_PREFIX):] for p in fused_dir.glob(f"{RGB_PREFIX}*.png")
+                      if p.stem.startswith(RGB_PREFIX)}
         missing_png = sorted(expected_ids - actual_ids)
         extra_png = sorted(actual_ids - expected_ids)
         if missing_png or extra_png:
