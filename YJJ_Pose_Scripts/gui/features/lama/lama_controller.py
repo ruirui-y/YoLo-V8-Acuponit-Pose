@@ -1,0 +1,1065 @@
+"""LaMa 工作流协调控制器。
+
+负责整个 Open -> SetRef -> TestOne -> A -> 修正 -> Q -> Next 的顺序工作流。
+维护：
+- image_files / current_index / reference_index / busy
+- 当前 reference 状态 / prediction 状态
+
+连接 LamaPage signals，但算法调用必须交给 service。
+
+依赖方向：
+    LamaPage -> LamaController -> services / InpaintCanvas
+    LamaController 连接 Page signals，Page 不调用 Controller。
+    Service 不依赖 QWidget。
+
+参考 C++ LamaErasure/MainWindow.cpp 的工作流槽函数（onSetAsReference/
+onAssistMask/onQuickInpaint/onTestOneImage/showNextImage/showPrevImage），
+但裁剪掉 Batch / AutoMask / Inpaint Preview / SaveAs 等历史功能。
+
+Phase 1（已完成）：Open / Prev / Next / ClearMask + 占位信号槽
+Phase 2（已完成）：MaskLabelService（Q 流程标签生成，本文件暂未接入）
+Phase 3（已完成）：ReferenceAlignmentService（SetRef / predict / stable ID）
+Phase 4（已完成）：A + TestOne 走同一 predict() API
+Phase 5（已完成）：LamaInferenceService 接入 + TestOne 可选推理预览
+Phase 6（本文件）：Q 原子 Commit 状态机（Image+Label+Rolling Ref+Next）
+
+正确性修复（P0/P1）：
+- P0-2: Q 不再有 y/x fallback；必须有 7 个 OK 预测，否则 BLOCK；failed track 不允许
+        直接用未位移的 ref_center 作为正常预测（_get_predicted_centers 仅返回 ok=True）。
+- P0-3: Q 真正原子提交：
+        * 预先 prepare_reference 预验证 Reference State，inference 前就确保可 apply
+        * 写 image.tmp.<ext> + label.tmp.txt（保留真实扩展名，cv2 才能正确编码）
+        * 旧正式文件先备份 -> rename temp -> 正式；任一失败恢复备份不破坏旧文件
+        * 文件全部成功后才 apply_prepared_reference（仅赋值不会失败）
+- P1-1: TestOne 主预测必须与 A 同样使用 predict(mode="assist")。
+- P1-2: TestOne 推理走后台 worker（_test_one_worker），不阻塞 GUI 主线程。
+- P1-4: _InpaintWorker 完成后 deleteLater + 清空 self._inpaint_worker / _test_one_worker；
+        成功/失败都清理 _commit_snapshot；窗口关闭时 cleanup_worker 显式 wait / terminate。
+"""
+import os
+import cv2
+import numpy as np
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from PySide6.QtCore import QObject, Qt, QPointF, QThread, Signal
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap
+from PySide6.QtWidgets import (
+    QDialog, QFileDialog, QLabel, QPushButton, QVBoxLayout,
+)
+
+from .services import (
+    MaskLabelService, ReferenceAlignmentService, PredictionResult,
+    LamaInferenceService,
+)
+from .widgets.inpaint_canvas import _make_mask_overlay_rgba
+from core.settings_store import SettingsStore
+
+
+# 支持的图片扩展名（与 C++ 一致）
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp"}
+
+# 期望的 mask component 数量（工作流固定 7 个 keypoint）
+_EXPECTED_COMPONENT_COUNT = 7
+
+
+# ============================================================ Q 原子 Commit 快照
+@dataclass
+class _CommitSnapshot:
+    """Q 流程开始时的独立快照（与 C++ onQuickInpaint 的快照一致）。
+
+    后面 show_next_image() 会换掉 Canvas，异步 callback 里绝不能再读 canvas / current_index。
+    """
+    current_index: int                 # 快照时的图片索引
+    current_path: str                  # 快照时的图片绝对路径
+    original_rgb: np.ndarray           # 原图 RGB（numpy，已 copy）
+    final_mask: np.ndarray             # 最终人工确认 mask（numpy，已 copy）
+    ordered_points: list               # stable ID -> (cx, cy) 7 个点（canonical 顺序）
+    bbox: tuple                        # 占位 BoundingBox (x, y, w, h)
+    image_size: tuple                  # (width, height)
+    output_path: str                   # out/ 目录下的输出图片路径
+    label_path: str                    # labels/ 目录下的标签路径
+    # P0-3: 预验证过的 Reference State，文件写成功后 apply，避免半提交
+    prepared_ref: object = None        # _PreparedReference（opaque）
+
+
+# ============================================================ 后台推理 Worker
+class _InpaintWorker(QThread):
+    """在后台线程执行 LaMa 推理，避免 GUI 卡死。
+
+    与 C++ LamaOrt::RunAsync + QMetaObject::invokeMode 一致：
+    - 在独立线程跑 processCore
+    - 通过 finished 信号把结果回到主线程
+
+    生命周期（P1-4）：
+    - parent 必须为 None，避免 page 销毁时 Qt 自动 destroy 仍 running 的 thread
+    - 调用方在 finished slot 中 deleteLater + 清空引用
+    - 窗口关闭时调用 cleanup_worker() 显式 wait / terminate
+    """
+    finished_with_result = Signal(object)     # np.ndarray（空数组表示失败）
+
+    def __init__(self, service, image: np.ndarray, mask: np.ndarray,
+                 parent=None):
+        # P1-4: parent 强制 None，避免 page 销毁时 "QThread: Destroyed while still running"
+        super().__init__(None)
+        self._service = service
+        self._image = image
+        self._mask = mask
+
+    def run(self):
+        """在后台线程执行推理。"""
+        try:
+            result = self._service.run(self._image, self._mask)
+        except Exception:
+            result = np.zeros((0, 0, 3), dtype=np.uint8)
+        self.finished_with_result.emit(result)
+
+
+class LamaController(QObject):
+    """LaMa 工作流协调器：连接 Page 信号 -> 调用 services / 更新 Page。"""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self._page = page
+
+        # ---- 设置 ----
+        self._settings_store = SettingsStore()
+
+        # ---- 状态 ----
+        self._image_files = []          # 当前文件夹所有图片绝对路径
+        self._current_index = -1        # 当前显示的图片索引
+        self._reference_index = -1     # 当前 Reference 对应的图片索引（rolling reference）
+        self._busy = False              # Q 流程进行中（避免状态被破坏）
+
+        # ---- services ----
+        self._mask_label_service = MaskLabelService()
+        self._reference_alignment_service = ReferenceAlignmentService()
+        self._lama_inference_service = LamaInferenceService()
+
+        # ---- 当前 prediction（A 键结果，供 Q 流程一对一匹配）----
+        self._current_prediction = None       # PredictionResult
+
+        # ---- Q 原子 Commit 状态 ----
+        self._commit_snapshot = None          # _CommitSnapshot（Q 流程进行中持有）
+        self._inpaint_worker = None           # _InpaintWorker（Q 后台推理线程）
+
+        # ---- TestOne 异步推理状态（P1-2）----
+        # _test_one_pending 持有 (base_qimg, prediction_result, debug_result) 供 callback 使用
+        self._test_one_worker = None          # _InpaintWorker（TestOne 后台推理）
+        self._test_one_pending = None         # (base_qimg, result, debug_result) or None
+
+        # ---- 信号连接 ----
+        self._connect_signals()
+        self._refresh_status()
+
+        # ---- 启动时自动加载 LaMa 模型（保留 LoadModel 按钮作为故障/换模型入口）----
+        self._try_auto_load_model()
+
+    # ================================================================ Worker 生命周期（P1-4）
+    def cleanup_worker(self):
+        """窗口关闭 / Page 销毁前调用：等待或终止仍运行的后台 worker。
+
+        防止 "QThread: Destroyed while thread is still running" 警告。
+        成功/失败都清理 self._inpaint_worker / self._commit_snapshot。
+        """
+        # Q worker
+        if self._inpaint_worker is not None:
+            w = self._inpaint_worker
+            self._inpaint_worker = None
+            self._cleanup_running_worker(w)
+        self._commit_snapshot = None
+        # TestOne worker
+        if self._test_one_worker is not None:
+            w = self._test_one_worker
+            self._test_one_worker = None
+            self._test_one_pending = None
+            self._cleanup_running_worker(w)
+
+    @staticmethod
+    def _cleanup_running_worker(w: _InpaintWorker):
+        """等待 / 终止单个 worker 并 deleteLater。"""
+        if w is None:
+            return
+        if w.isRunning():
+            # 给最多 5 秒自然完成（LaMa 推理一般几秒）
+            w.wait(5000)
+            if w.isRunning():
+                # 仍未完成 -> 强制 terminate（不推荐但避免警告）
+                w.terminate()
+                w.wait(1000)
+        try:
+            w.deleteLater()
+        except Exception:
+            pass
+
+    # ================================================================ 信号连接
+    def _connect_signals(self):
+        p = self._page
+        p.openRequested.connect(self._on_open)
+        p.loadModelRequested.connect(self._on_load_model)
+        p.clearMaskRequested.connect(self._on_clear_mask)
+        p.setRefRequested.connect(self._on_set_ref)
+        p.testOneRequested.connect(self._on_test_one)
+        p.assistMaskRequested.connect(self._on_assist_mask)
+        p.commitRequested.connect(self._on_commit)
+        p.helpRequested.connect(self._on_help)
+        p.prevRequested.connect(self._on_prev)
+        p.nextRequested.connect(self._on_next)
+        p.brushRadiusChanged.connect(self._on_brush_changed)
+
+    # ================================================================ Phase 1: Open / Prev / Next / ClearMask
+    def _on_open(self):
+        """打开单张图片：自动加载同目录所有图片并按名称排序。"""
+        if self._busy:
+            self._page.set_status_text("Busy，请等待 Q 完成")
+            return
+        # 默认目录：优先当前打开过的目录
+        default_dir = ""
+        if self._current_index >= 0 and self._image_files:
+            default_dir = str(Path(self._image_files[self._current_index]).parent)
+
+        f, _ = QFileDialog.getOpenFileName(
+            self._page, "Open Image", default_dir,
+            "Images (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if not f:
+            return
+
+        # 收集同目录所有图片并按名称排序（与 C++ QDir::Name 一致）
+        path = Path(f)
+        files = [p for p in path.parent.iterdir()
+                 if p.is_file() and p.suffix.lower() in _IMAGE_EXTS]
+        files.sort(key=lambda x: x.name)
+        if not files:
+            return
+
+        # ---- 重置上一轮 LaMa 标注 session（新序列绝不能继承旧 rolling reference）----
+        # 只重建 ReferenceAlignmentService，不动 MaskLabelService / LamaInferenceService，
+        # 避免自动加载好的 ONNX 模型被丢掉。
+        self._reference_index = -1
+        self._current_prediction = None
+        self._reference_alignment_service = ReferenceAlignmentService()
+
+        self._image_files = [str(p) for p in files]
+        try:
+            self._current_index = self._image_files.index(str(path))
+        except ValueError:
+            self._current_index = 0
+
+        self._load_current_image()
+        self._refresh_status()
+
+    def _on_clear_mask(self):
+        """清空当前 mask。"""
+        if self._busy:
+            return
+        self._page.canvas.clear_mask()
+        # 清空 mask 同时清掉当前 prediction（草稿已弃用）
+        self._current_prediction = None
+        self._refresh_status()
+
+    def _on_prev(self):
+        """切到上一张（不再循环）。"""
+        if self._busy:
+            return
+        if not self._image_files or self._current_index < 0:
+            return
+        if self._current_index == 0:
+            self._page.set_status_text("Already at first image")
+            self._refresh_status()
+            return
+        self._current_index -= 1
+        self._load_current_image()
+        self._refresh_status()
+
+    def _on_next(self):
+        """切到下一张（不再循环，最后一张 Q 后停留此处）。"""
+        if self._busy:
+            return
+        if not self._image_files or self._current_index < 0:
+            return
+        n = len(self._image_files)
+        if self._current_index == n - 1:
+            self._page.set_status_text("All images completed / 已到最后一张")
+            self._refresh_status()
+            return
+        self._current_index += 1
+        self._load_current_image()
+        self._refresh_status()
+
+    def _on_brush_changed(self, radius: int):
+        """画笔半径变化，更新状态。"""
+        self._page.set_status_text(f"Brush={radius}")
+
+    # ---- Phase 1 内部辅助 ----
+    def _load_current_image(self):
+        """加载 self._current_index 指向的图片到 canvas。"""
+        if not self._image_files or self._current_index < 0:
+            return
+        f = self._image_files[self._current_index]
+        if self._page.canvas.load_image(f):
+            # 切图后清空当前 prediction（旧 prediction 已失效）
+            self._current_prediction = None
+            self._page.set_status_text(
+                f"Image {self._current_index + 1}/{len(self._image_files)}"
+            )
+
+    # ================================================================ Phase 5: LoadModel / Auto Load
+    def _try_auto_load_model(self):
+        """启动时自动尝试加载 LaMa 模型。
+
+        优先级（不崩溃，失败留 LoadModel 按钮给用户手动选择）：
+            1. QSettings:  lama/model_path
+            2. 环境变量:    YJJ_LAMA_MODEL
+            3. feature-local: <本文件所在目录>/models/lama_fp32.onnx
+        """
+        candidate = None
+
+        # ---- 1. QSettings ----
+        saved_path = self._settings_store.get("lama/model_path", None)
+        if saved_path and isinstance(saved_path, str) and os.path.isfile(saved_path):
+            candidate = saved_path
+
+        # ---- 2. 环境变量 ----
+        if candidate is None:
+            env_path = os.environ.get("YJJ_LAMA_MODEL", "")
+            if env_path and os.path.isfile(env_path):
+                candidate = env_path
+
+        # ---- 3. feature-local fallback ----
+        if candidate is None:
+            default_model = (
+                Path(__file__).resolve().parent
+                / "models"
+                / "lama_fp32.onnx"
+            )
+            if default_model.is_file():
+                candidate = str(default_model)
+
+        if candidate is None:
+            # 没有任何候选 → 静默跳过，保留 LoadModel 按钮
+            return
+
+        try:
+            ok = self._lama_inference_service.load_model(candidate)
+        except Exception:
+            ok = False
+
+        if ok:
+            self._page.set_status_text(
+                f"Model auto-loaded: {Path(candidate).name}"
+            )
+        # 失败：不崩溃也不打扰用户，LoadModel 按钮仍可用
+
+    def _on_load_model(self):
+        """加载 LaMa ONNX 模型（路径由用户选择，不写死）。
+
+        选择成功后把路径写入 QSettings（lama/model_path），下次启动自动加载。
+        """
+        if self._busy:
+            self._page.set_status_text("Busy，请等待 Q 完成")
+            return
+        f, _ = QFileDialog.getOpenFileName(
+            self._page, "Select LaMa ONNX Model", "",
+            "ONNX Models (*.onnx)"
+        )
+        if not f:
+            return
+        self._page.set_status_text("Loading model...")
+        ok = self._lama_inference_service.load_model(f)
+        if ok:
+            self._page.set_status_text(f"Model loaded: {Path(f).name}")
+            # 持久化：下次启动自动加载同一个模型
+            try:
+                self._settings_store.set("lama/model_path", f)
+                self._settings_store.sync()
+            except Exception:
+                # QSettings 写入失败不影响模型实际已加载
+                pass
+        else:
+            self._page.set_status_text("Failed to load model (onnxruntime 未安装或模型无效)")
+
+    # ================================================================ Phase 4: SetRef / A / TestOne
+    def _on_set_ref(self):
+        """SetRef：将当前图 + 最终 mask 设为基准（rolling reference 入口 1/2）。
+
+        与 C++ MainWindow::onSetAsReference 一致：
+        1. 检查 canvas 有图 + mask 非空
+        2. 从 finalMask 提取 centers，按 (y,x) 升序建立 canonical ID 0..6
+        3. 调 ReferenceAlignmentService.set_reference(...)
+        4. 更新 reference_index / 清空 current_prediction
+        """
+        if self._busy:
+            self._page.set_status_text("Busy，请等待 Q 完成")
+            return
+        canvas = self._page.canvas
+        src = canvas.source_image()
+        if src.isNull():
+            self._page.set_status_text("No image on canvas")
+            return
+        mask = canvas.mask_image()
+        if mask.isNull():
+            self._page.set_status_text("Mask is empty, please draw 7 masks first")
+            return
+
+        # ---- 转 numpy ----
+        ref_rgb = self._qimage_to_rgb_np(src)
+        ref_mask = self._mask_qimage_to_np(mask)
+
+        # ---- 从 finalMask 提取 centers（与 C++ ExtractMaskCenters 一致）----
+        centers = ReferenceAlignmentService.extract_mask_centers(
+            ref_mask, min_component_area=50
+        )
+        if len(centers) != _EXPECTED_COMPONENT_COUNT:
+            self._page.set_status_text(
+                f"Expected {_EXPECTED_COMPONENT_COUNT} masks, got {len(centers)}"
+            )
+            return
+
+        # ---- 按 (y, x) 升序建立 canonical ID 0..6（stable ID 关键）----
+        centers.sort(key=lambda c: (c[1], c[0]))
+
+        # ---- 调 service ----
+        ok = self._reference_alignment_service.set_reference(
+            ref_rgb, ref_mask, ordered_points=centers, ref_rect=None
+        )
+        if not ok:
+            self._page.set_status_text("Reference set FAILED")
+            return
+
+        self._reference_index = self._current_index
+        self._current_prediction = None     # 清空旧 prediction
+        self._refresh_status()
+        self._page.set_status_text("Reference set OK")
+
+    def _on_assist_mask(self):
+        """A 键：基于基准预测 mask 草稿（mode="assist"）。
+
+        与 C++ MainWindow::onAssistMask 一致：
+        1. 前提：Reference Ready + 当前图不是 Reference 本身 + busy == false
+        2. 调 predict(target_rgb, mode="assist")
+        3. 把 prediction.mask 写回 canvas
+        4. 保存 current_prediction（供 Q 流程 ID -> predictedCenter 匹配）
+        5. 显示 Prediction: x/7
+        """
+        if self._busy:
+            return
+        if not self._reference_alignment_service.is_ready():
+            self._page.set_status_text("Reference not set. Click SetRef first")
+            return
+        canvas = self._page.canvas
+        src = canvas.source_image()
+        if src.isNull():
+            self._page.set_status_text("No image on canvas")
+            return
+        if self._current_index == self._reference_index:
+            self._page.set_status_text("Current is reference itself, no need to predict")
+            return
+
+        # ---- 调用统一 predict API（A 与 TestOne 共用同一方法）----
+        target_rgb = self._qimage_to_rgb_np(src)
+        result = self._reference_alignment_service.predict(target_rgb, mode="assist")
+        self._current_prediction = result
+
+        # ---- 显示预测结果到 canvas ----
+        if result.mask is None:
+            self._page.set_prediction_info(0, result.total)
+            self._page.set_status_text(
+                f"AssistMask: predicted 0/{result.total}, please draw manually"
+            )
+            return
+
+        mask_qimg = self._np_mask_to_qimage(result.mask)
+        canvas.set_mask(mask_qimg)
+        self._page.set_prediction_info(result.success, result.total)
+        if result.success < result.total:
+            self._page.set_status_text(
+                f"AssistMask: predicted {result.success}/{result.total}, please fix manually"
+            )
+        else:
+            self._page.set_status_text(
+                f"AssistMask: predicted {result.success}/{result.total}"
+            )
+
+    def _on_test_one(self):
+        """TestOne：测试基准追踪效果（不保存、不修改 reference、不切图）。
+
+        P1-1 修订：主预测必须与 A 同样使用 predict(mode="assist")，因为 TestOne
+        的目的就是验证实际 A workflow（A 模式画固定半径圆，允许部分失败）。
+        历史的 strict 模式只在调试需要时才用，不再作为主结果。
+
+        P1-2 修订：推理不得阻塞 GUI 主线程。若 LaMa 模型已加载，启动后台 worker，
+        完成后回调 _on_test_one_inpaint_done 显示预览窗。
+
+        与 C++ MainWindow::onTestOneImage 一致：
+        1. 前提：Reference Ready
+        2. 选择测试图片
+        3. 调 predict(target_rgb, mode="assist")  <- 与 A 同一 API
+        4. 失败：显示失败原因
+        5. 成功：显示 overlay 预览 + track 调试框
+        6. 若 LaMa 模型已加载，启动后台 worker 推理（不阻塞 GUI）
+        """
+        if self._busy:
+            return
+        if not self._reference_alignment_service.is_ready():
+            self._page.set_status_text("Reference not set. Click SetRef first")
+            return
+        # 上一轮 TestOne worker 仍在运行就不允许新一轮
+        if self._test_one_worker is not None:
+            self._page.set_status_text("TestOne worker still running, please wait")
+            return
+
+        # ---- 选择测试图片 ----
+        f, _ = QFileDialog.getOpenFileName(
+            self._page, "Select one image (B)", "",
+            "Images (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if not f:
+            return
+        img_b = QImage(f)
+        if img_b.isNull():
+            self._page.set_status_text("Failed to load image")
+            return
+
+        # ---- P1-1: 调用统一 predict API，mode 与 A 一致 ----
+        target_rgb = self._qimage_to_rgb_np(img_b)
+        result = self._reference_alignment_service.predict(target_rgb, mode="assist")
+
+        if result.mask is None:
+            # ---- 失败：统计 + 第一个失败 track 的原因 ----
+            fail_msgs = []
+            for t in result.tracks:
+                if not t.ok:
+                    fail_msgs.append(f"track {t.id}: {t.fail_reason} (score={t.score:.2f})")
+            head = "; ".join(fail_msgs[:3]) if fail_msgs else "no track succeeded"
+            self._page.set_status_text(
+                f"Local match failed: {result.success}/{result.total} | {head}"
+            )
+            return
+
+        self._page.set_status_text(
+            f"Local match OK: {result.success}/{result.total}"
+        )
+
+        # ---- 预先生成 base preview（mask overlay + track 调试框）----
+        base_qimg = self._build_test_one_preview(img_b, result)
+
+        # ---- 若 LaMa 模型已加载：后台 worker 推理，避免阻塞 GUI（P1-2）----
+        if self._lama_inference_service.is_loaded():
+            self._page.set_status_text("TestOne: 推理中（后台）...")
+            self._test_one_pending = (base_qimg, result)
+            self._test_one_worker = _InpaintWorker(
+                self._lama_inference_service, target_rgb, result.mask, parent=None
+            )
+            self._test_one_worker.finished_with_result.connect(
+                self._on_test_one_inpaint_done
+            )
+            self._test_one_worker.start()
+            return
+
+        # ---- 模型未加载：直接显示 base preview ----
+        self._show_test_one_preview_dialog(base_qimg, result, None)
+
+    def _on_test_one_inpaint_done(self, result_arr: np.ndarray):
+        """TestOne 后台推理完成回调（P1-2）。
+
+        在主线程执行，由 worker 信号触发。从 _test_one_pending 取出 base_qimg + prediction，
+        显示对比预览窗，最后清理 worker。
+        """
+        pending = self._test_one_pending
+        # P1-4: 无论成功失败都清理 worker 与 pending
+        worker = self._test_one_worker
+        self._test_one_worker = None
+        self._test_one_pending = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if pending is None:
+            self._page.set_status_text("TestOne: pending state lost")
+            return
+
+        base_qimg, result = pending
+        inpainted = result_arr if (result_arr is not None and result_arr.size > 0) else None
+
+        if inpainted is not None:
+            self._page.set_status_text(
+                f"Local match OK: {result.success}/{result.total} | Inpaint done"
+            )
+        else:
+            self._page.set_status_text(
+                f"Local match OK: {result.success}/{result.total} | Inpaint failed"
+            )
+
+        self._show_test_one_preview_dialog(base_qimg, result, inpainted)
+
+    def _build_test_one_preview(self, base_img: QImage,
+                                 result: PredictionResult) -> QImage:
+        """生成 TestOne 预览 base 图：原图 + mask overlay + track 调试框 + ID。"""
+        preview = base_img.convertToFormat(QImage.Format.Format_RGB888).copy()
+        p = QPainter(preview)
+        # ---- mask overlay 半透明红（与 C++ MakeOverlayPreview 一致）----
+        if result.mask is not None:
+            mask_q = self._np_mask_to_qimage(result.mask)
+            overlay = _make_mask_overlay_rgba(mask_q, alpha=120)
+            p.drawImage(0, 0, overlay)
+        # ---- track 调试框：绿色圆 + ID（与 C++ 绿框 + 编号一致）----
+        p.setPen(QPen(QColor(0, 255, 0), 2))
+        p.setFont(QFont("monospace", 11))
+        for t in result.tracks:
+            if not t.ok:
+                continue
+            cx, cy = t.current_center
+            p.drawEllipse(QPointF(cx, cy), 16, 16)
+            p.drawText(int(cx) - 6, int(cy) - 20, str(t.id))
+        p.end()
+        return preview
+
+    def _show_test_one_preview_dialog(self, base_qimg: QImage,
+                                       result: PredictionResult,
+                                       inpainted: np.ndarray = None):
+        """弹出 TestOne 预览窗：base + （可选）擦除结果对比。"""
+        dlg = QDialog(self._page)
+        dlg.setWindowTitle(f"TestOne: {result.success}/{result.total} ok")
+        dlg.resize(1200, 600)
+        lay = QVBoxLayout(dlg)
+        # 预览图
+        lbl = QLabel()
+        lbl.setPixmap(QPixmap.fromImage(base_qimg))
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(lbl)
+        # 擦除结果（如果有）
+        if inpainted is not None and inpainted.size > 0:
+            inpainted_q = self._np_rgb_to_qimage(inpainted)
+            lbl2 = QLabel()
+            lbl2.setPixmap(QPixmap.fromImage(inpainted_q))
+            lbl2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(lbl2)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
+    # ================================================================ Phase 6: Q 原子 Commit 状态机
+    def _on_commit(self):
+        """Q 键：原子 Commit 状态机（与 C++ MainWindow::onQuickInpaint 一致）。
+
+        真正原子提交流程（P0-3）：
+        1. 安全检查（busy / canvas / current_index / mask 非空）
+        2. 快照 original_rgb + final_mask + current_path + image_size
+        3. 检查 current_prediction：必须 7 个 OK 预测，否则 BLOCK（P0-2）
+           禁止用 finalMask centers 按 y/x 重新建 ID；
+           禁止 failed track 用未位移的 ref_center 当作正常预测。
+        4. MaskLabelService 分析 final_mask（7 component + 全局 assignment + bbox）
+           失败 -> BLOCK，不写文件
+        5. 预验证 Reference State（prepare_reference），失败 BLOCK
+        6. 生成输出路径 out/ + labels/
+        7. 检查 LaMa 模型已加载
+        8. busy = true，禁用所有按钮
+        9. 后台 worker 执行 LaMa 推理（避免 GUI freeze）
+        10. callback _on_inpaint_done：
+            - 写 image.tmp.<ext> + label.tmp.txt
+            - 都成功 -> 备份旧正式文件 -> rename 两个 temp 到正式路径
+              任一失败 -> 删除 temp + 恢复旧正式文件，busy=false，留当前图
+            - apply 预验证过的 Reference State（不会失败）
+            - busy = false，清空 worker
+            - show_next_image()（Q 成功以前绝不切下一张）
+        """
+        # ---- 1. 安全检查 ----
+        if self._busy:
+            self._page.set_status_text("Busy，请等待 Q 完成")
+            return
+        canvas = self._page.canvas
+        src = canvas.source_image()
+        if src.isNull():
+            self._page.set_status_text("No image on canvas")
+            return
+        if self._current_index < 0 or self._current_index >= len(self._image_files):
+            self._page.set_status_text("当前没有打开的文件路径，请先 Open")
+            return
+        mask = canvas.mask_image()
+        if mask.isNull():
+            self._page.set_status_text("Mask is empty, please draw 7 masks first")
+            return
+
+        # ---- 2. 快照（与 C++ 一样，异步 callback 里绝不能再读 canvas/current_index）----
+        current_path = self._image_files[self._current_index]
+        original_rgb = self._qimage_to_rgb_np(src).copy()
+        final_mask = self._mask_qimage_to_np(mask).copy()
+        image_size = (src.width(), src.height())
+        snapshot_index = self._current_index
+
+        # ---- 3. 确定 predicted_centers：当前图是 Reference 还是后续图 ----
+        # Case 1: 当前图 == 当前 Reference 且 ref 已经建立
+        #         SetRef 之后用户可以直接 Q，不需要 A。
+        #         此时 stable ID 来自 Reference canonical points，
+        #         MaskLabelService 会让 finalMask 的 7 个 component
+        #         与 canonical reference points 做一对一匹配，
+        #         即使用户在 SetRef 后又轻微修了 Mask 也能正确 assignment。
+        # Case 2: 当前图 != Reference
+        #         必须有 A 的稳定预测（7 个 OK stable ID），否则 BLOCK。
+        #         禁止对后续图退回到 finalMask centers 按 y/x 重排建 ID，
+        #         因为那会破坏跨图的 stable ID 一致性。
+        is_current_ref = (
+            self._current_index == self._reference_index
+            and self._reference_alignment_service.is_ready()
+        )
+        if is_current_ref:
+            # ---- Case 1：Reference 自己直接 Q ----
+            ref_points = self._reference_alignment_service.reference_points()
+            if len(ref_points) != _EXPECTED_COMPONENT_COUNT:
+                self._page.set_status_text(
+                    f"Q BLOCK: Reference canonical points 不足 {_EXPECTED_COMPONENT_COUNT} 个"
+                )
+                return
+            predicted_centers = {
+                i: ref_points[i] for i in range(_EXPECTED_COMPONENT_COUNT)
+            }
+        else:
+            # ---- Case 2：后续图必须来自 A prediction ----
+            predicted_centers = self._get_predicted_centers()
+            if len(predicted_centers) != _EXPECTED_COMPONENT_COUNT:
+                self._page.set_status_text(
+                    "当前图片尚未执行 Assist Mask，请先按 A。"
+                )
+                return
+
+        # ---- 4. MaskLabelService 分析 final_mask（component 数 != 7 或 assignment 失败 -> BLOCK）----
+        label_result = self._mask_label_service.make_label(
+            final_mask, predicted_centers, image_size
+        )
+        if label_result is None:
+            self._page.set_status_text(
+                "Q BLOCK: mask label validation FAILED (7 components / stable ID / distance)"
+            )
+            return
+
+        # ---- 5. P0-3: 预验证 Reference State（不修改当前状态）----
+        # 文件写成功后才 apply，避免半提交（image/label 已写但 ref 更新失败）
+        prepared_ref = self._reference_alignment_service.prepare_reference(
+            original_rgb, final_mask,
+            ordered_points=list(label_result.ordered_points),
+            ref_rect=None,
+        )
+        if prepared_ref is None:
+            self._page.set_status_text(
+                "Q BLOCK: rolling reference 预验证失败（component 数 != 7 或一对一匹配失败）"
+            )
+            return
+
+        # ---- 6. 生成输出路径（与 C++ 一致：sourceDir/out/ + sourceDir/labels/）----
+        path_obj = Path(current_path)
+        source_dir = path_obj.parent
+        out_dir = source_dir / "out"
+        labels_dir = source_dir / "labels"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        labels_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / path_obj.name)
+        label_path = str(labels_dir / (path_obj.stem + ".txt"))
+
+        # ---- 7. 检查模型已加载 ----
+        if not self._lama_inference_service.is_loaded():
+            self._page.set_status_text("LaMa model not loaded. Click LoadModel first")
+            return
+
+        # ---- 保存快照（供 callback 使用，含预验证过的 prepared_ref）----
+        self._commit_snapshot = _CommitSnapshot(
+            current_index=snapshot_index,
+            current_path=current_path,
+            original_rgb=original_rgb,
+            final_mask=final_mask,
+            ordered_points=list(label_result.ordered_points),
+            bbox=label_result.bbox,
+            image_size=image_size,
+            output_path=output_path,
+            label_path=label_path,
+            prepared_ref=prepared_ref,
+        )
+
+        # ---- 8. busy = true，禁用所有按钮 ----
+        self._busy = True
+        self._page.set_busy(True)
+        self._page.set_status_text("Q: 正在推理...")
+
+        # ---- 9. 后台 worker 执行 LaMa 推理 ----
+        # P1-4: parent 强制 None；callback 内完成后 deleteLater + 清空 self._inpaint_worker
+        self._inpaint_worker = _InpaintWorker(
+            self._lama_inference_service, original_rgb, final_mask, parent=None
+        )
+        self._inpaint_worker.finished_with_result.connect(self._on_inpaint_done)
+        self._inpaint_worker.start()
+
+    def _on_inpaint_done(self, result: np.ndarray):
+        """LaMa 推理完成回调（在主线程执行，由 worker 信号触发）。
+
+        真正原子提交（P0-3）：
+        1. 推理失败 -> busy=false，清理 worker，不保存，不更新 ref，不切图
+        2. 写 image.tmp.<ext> + label.tmp.txt（保持真实扩展名，cv2 才能正确编码）
+        3. 都成功 -> 备份旧正式文件（image.bak.<ext> + label.bak.txt）
+                 -> os.replace temp -> 正式路径
+                 -> 任一失败 -> 删除 temp + 恢复备份，busy=false，留当前图
+        4. apply 预验证过的 Reference State（apply_prepared_reference 仅赋值不会失败）
+        5. busy = false，deleteLater worker + 清空 self._inpaint_worker + _commit_snapshot
+        6. show_next_image()（Q 成功以前绝不切下一张）
+        """
+        snap = self._commit_snapshot
+        # P1-4: 无论成功失败都清理 worker 与 snapshot
+        worker = self._inpaint_worker
+        self._inpaint_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        def _abort(msg: str):
+            """统一失败路径：恢复 busy=false + 清理 snapshot，不切图。"""
+            self._busy = False
+            self._page.set_busy(False)
+            self._commit_snapshot = None
+            self._page.set_status_text(msg)
+
+        # ---- 1. 推理失败 ----
+        if result is None or result.size == 0 or snap is None:
+            _abort("Q: Inpaint failed. Not saved.")
+            return
+
+        # ---- 2. 写 image.tmp.<ext> + label.tmp.txt ----
+        # P0-3: temp 必须保留真实图片扩展名（cv2.im* 按扩展名选编码器）
+        path_obj = Path(snap.output_path)
+        tmp_img = str(path_obj.parent / (path_obj.stem + ".tmp" + path_obj.suffix))
+        # image: RGB -> BGR for cv2.imwrite
+        result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+        img_ok = cv2.imwrite(tmp_img, result_bgr)
+
+        # label content
+        label_content = self._mask_label_service.make_label_content(
+            snap.bbox, snap.ordered_points, snap.image_size
+        )
+        tmp_label = snap.label_path + ".tmp.txt"
+        label_ok = False
+        if label_content:
+            try:
+                os.makedirs(os.path.dirname(tmp_label), exist_ok=True)
+                with open(tmp_label, "w", encoding="utf-8") as f:
+                    f.write(label_content + "\n")
+                label_ok = True
+            except OSError:
+                label_ok = False
+
+        # ---- 任一写失败：清理 temp + 不破坏旧正式文件 ----
+        if not (img_ok and label_ok):
+            self._cleanup_tmp(tmp_img, tmp_label)
+            fail_reason = []
+            if not img_ok:
+                fail_reason.append("image write")
+            if not label_ok:
+                fail_reason.append("label write")
+            _abort(f"Q: Save failed ({', '.join(fail_reason)}). Not committed.")
+            return
+
+        # ---- 3. 备份旧正式文件 + rename temp -> 正式 ----
+        # 如果正式文件已存在：先备份，rename 成功后删除备份，失败恢复
+        # 如果正式文件不存在：直接 rename
+        backup_img = snap.output_path + ".bak"
+        backup_label = snap.label_path + ".bak"
+        had_img = os.path.exists(snap.output_path)
+        had_label = os.path.exists(snap.label_path)
+
+        try:
+            # ---- 备份旧文件 ----
+            if had_img:
+                os.replace(snap.output_path, backup_img)
+            if had_label:
+                os.replace(snap.label_path, backup_label)
+
+            # ---- rename temp -> 正式 ----
+            os.replace(tmp_img, snap.output_path)
+            os.replace(tmp_label, snap.label_path)
+
+            # ---- 正式文件成功后删除备份 ----
+            if had_img and os.path.exists(backup_img):
+                os.remove(backup_img)
+            if had_label and os.path.exists(backup_label):
+                os.remove(backup_label)
+
+        except OSError:
+            # ---- 任一 rename 失败：恢复旧正式文件 + 清理 temp ----
+            # 先把可能已经替换的正式文件回退回 temp 名
+            try:
+                if os.path.exists(tmp_img):
+                    # temp 还在 -> 正式未替换 -> noop
+                    pass
+                elif os.path.exists(snap.output_path):
+                    # 正式已被替换但 label rename 失败 -> 把 image 回到 temp
+                    os.replace(snap.output_path, tmp_img)
+            except OSError:
+                pass
+            # 恢复备份
+            try:
+                if had_img and os.path.exists(backup_img):
+                    os.replace(backup_img, snap.output_path)
+                if had_label and os.path.exists(backup_label):
+                    os.replace(backup_label, snap.label_path)
+            except OSError:
+                pass
+            # 清理残留 temp / 备份
+            self._cleanup_tmp(tmp_img, tmp_label, backup_img, backup_label)
+            _abort("Q: Failed to rename output files. Old files restored.")
+            return
+
+        # ---- 4. apply 预验证过的 Reference State ----
+        # apply_prepared_reference 仅做赋值不会失败；prepared_ref 已在 _on_commit 中预验证
+        if not self._reference_alignment_service.apply_prepared_reference(snap.prepared_ref):
+            # 文件已写成功但 ref 应用失败（理论不应发生）-> 留当前图让用户决定
+            _abort("Q: Files saved but reference apply failed. Staying on current image.")
+            return
+
+        # ---- 5. P1-4: 成功清理 + busy = false ----
+        self._reference_index = snap.current_index
+        self._current_prediction = None     # 清空旧 prediction
+        self._busy = False
+        self._page.set_busy(False)
+        self._commit_snapshot = None
+        self._refresh_status()
+        self._page.set_status_text("Q: Commit success!")
+
+        # ---- 6. show_next_image()（Q 成功以前绝不切下一张）----
+        self._on_next()
+
+    @staticmethod
+    def _cleanup_tmp(*paths):
+        """清理临时文件。"""
+        for p in paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
+    def _on_help(self):
+        """显示帮助说明。"""
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self._page, "LaMa Erasure 使用说明",
+            "工作流：\n"
+            "1. Open 打开图片\n"
+            "2. 左键画 mask（7 个）/ 右键擦\n"
+            "3. SetRef 设为基准\n"
+            "4. TestOne 测试追踪\n"
+            "5. 下一张 -> A 预测 mask -> 人工修正 -> Q 提交\n"
+            "6. Q 自动下一张 -> A -> 修正 -> Q 循环\n\n"
+            "快捷键：A = AssistMask，Q = Commit"
+        )
+
+    # ================================================================ 内部：QImage <-> numpy 转换
+    @staticmethod
+    def _qimage_to_rgb_np(qimg: QImage) -> np.ndarray:
+        """QImage -> numpy HxWx3 uint8 RGB。
+
+        处理 RGB888 格式 + bytesPerLine padding。
+        返回 .copy() 以脱离 QImage 内部 buffer。
+        """
+        if qimg.isNull():
+            return np.zeros((0, 0, 3), dtype=np.uint8)
+        img = qimg.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = img.width(), img.height()
+        stride = img.bytesPerLine()
+        buf = bytes(img.constBits())
+        arr = np.frombuffer(buf, dtype=np.uint8, count=h * stride)
+        arr = arr.reshape(h, stride)
+        # 处理 stride padding
+        if stride != w * 3:
+            arr = arr[:, :w * 3]
+        arr = arr.reshape(h, w, 3)
+        return arr.copy()
+
+    @staticmethod
+    def _mask_qimage_to_np(qimg: QImage) -> np.ndarray:
+        """QImage -> numpy HxW uint8 0/255（Grayscale8）。
+
+        处理 bytesPerLine padding。
+        """
+        if qimg.isNull():
+            return np.zeros((0, 0), dtype=np.uint8)
+        img = qimg.convertToFormat(QImage.Format.Format_Grayscale8)
+        w, h = img.width(), img.height()
+        stride = img.bytesPerLine()
+        buf = bytes(img.constBits())
+        arr = np.frombuffer(buf, dtype=np.uint8, count=h * stride)
+        arr = arr.reshape(h, stride)
+        if stride != w:
+            arr = arr[:, :w]
+        return arr.copy()
+
+    @staticmethod
+    def _np_mask_to_qimage(np_mask: np.ndarray) -> QImage:
+        """numpy HxW uint8 0/255 -> QImage Grayscale8。
+
+        返回 .copy() 以脱离 numpy buffer。
+        """
+        if np_mask is None or np_mask.size == 0:
+            return QImage()
+        if np_mask.ndim == 3:
+            np_mask = cv2.cvtColor(np_mask, cv2.COLOR_RGB2GRAY)
+        h, w = np_mask.shape[:2]
+        np_mask = np.ascontiguousarray(np_mask)
+        img = QImage(np_mask.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
+        return img.copy()
+
+    @staticmethod
+    def _np_rgb_to_qimage(np_rgb: np.ndarray) -> QImage:
+        """numpy HxWx3 uint8 RGB -> QImage RGB888。
+
+        返回 .copy() 以脱离 numpy buffer。
+        """
+        if np_rgb is None or np_rgb.size == 0:
+            return QImage()
+        h, w = np_rgb.shape[:2]
+        np_rgb = np.ascontiguousarray(np_rgb)
+        img = QImage(np_rgb.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+        return img.copy()
+
+    # ================================================================ 内部：current_prediction 访问
+    def _get_predicted_centers(self) -> dict:
+        """从 current_prediction 提取 {track_id: (cx, cy)}（P0-2 修订）。
+
+        规则：
+        - 只返回 ok=True 的 track 的 current_center
+        - failed track 不允许用未位移的 ref_center 作为正常预测（这是危险兜底）
+        - 返回长度 < 7 时上层 _on_commit 会 BLOCK，绝不偷偷用 y/x 重排建 ID
+        """
+        if self._current_prediction is None:
+            return {}
+        centers = {}
+        for t in self._current_prediction.tracks:
+            if t.ok:
+                centers[t.id] = t.current_center
+        return centers
+
+    # ================================================================ 状态显示
+    def _refresh_status(self):
+        """刷新 Page 的永久状态栏。"""
+        n = len(self._image_files)
+        if n <= 0 or self._current_index < 0:
+            self._page.set_current_info(-1, 0, "-")
+        else:
+            filename = Path(self._image_files[self._current_index]).name
+            self._page.set_current_info(self._current_index, n, filename)
+
+        if self._reference_index >= 0:
+            self._page.set_reference_info(self._reference_index, None)
+            self._page.set_reference_ready(
+                self._reference_alignment_service.is_ready()
+            )
+        else:
+            self._page.set_reference_info(None, None)
+            self._page.set_reference_ready(False)
+
+        # ---- prediction 状态：从 current_prediction 取 ----
+        if self._current_prediction is not None:
+            self._page.set_prediction_info(
+                self._current_prediction.success,
+                self._current_prediction.total
+            )
+        else:
+            self._page.set_prediction_info(0, _EXPECTED_COMPONENT_COUNT)
+
+        self._page.set_busy(self._busy)
