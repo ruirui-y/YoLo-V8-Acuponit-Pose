@@ -56,10 +56,14 @@ class MainWindow(QMainWindow):
         self.eval_chain = []          # 对比测试剩余 leg 队列
         self._compare_pending = False
         self._last_eval_result = None
+        self._last_ablate_result = None
 
         # 统一的数据集 yaml 路径：训练按钮始终从这里取
         self.rgb_yaml = None
         self.rgbd_yaml = None
+        # 4ch 变体扫描结果缓存（dir_name -> yaml_path）与填充守卫
+        self._rgbd_variants = []
+        self._populating = False
 
         # 上一次路径持久化（QSettings，下次启动自动恢复）
         self._settings = QSettings("YJJ", "RGBDPoseTrainGUI")
@@ -75,9 +79,11 @@ class MainWindow(QMainWindow):
         self._settings_keys = {
             self.dataset_panel.le_existing: "existing_dir",
             self.dataset_panel.le_rgb: "rgb_dir",
-            self.dataset_panel.le_depth: "depth_dir",
+            self.dataset_panel.le_depth_npy: "depth_npy_dir",
             self.dataset_panel.le_label: "label_dir",
             self.dataset_panel.le_out: "out_dir",
+            self.dataset_panel.le_low: "depth_low",
+            self.dataset_panel.le_high: "depth_high",
             self.train_panel.le_base: "base_path",
             self.train_panel.le_py: "py_path",
             self.eval_panel.le_eval_rgb: "eval_rgb_pt",
@@ -179,16 +185,25 @@ class MainWindow(QMainWindow):
         """切换“准备新数据集 / 使用已有数据集”，同步启停控件与 yaml 路径。"""
         existing = self.dataset_panel.rb_existing.isChecked()
         # 准备新数据集整行（含输入框与“选择...”按钮）：仅“准备新数据集”模式启用
-        for row in (self.dataset_panel.row_rgb, self.dataset_panel.row_depth,
+        for row in (self.dataset_panel.row_rgb, self.dataset_panel.row_depth_npy,
                     self.dataset_panel.row_label, self.dataset_panel.row_out):
             row.setEnabled(not existing)
         self.dataset_panel.le_class.setEnabled(not existing)
+        self.dataset_panel.le_low.setEnabled(not existing)
+        self.dataset_panel.le_high.setEnabled(not existing)
         self.dataset_panel.btn_prepare.setEnabled(not existing)
-        # 已有数据集目录整行：仅“使用已有数据集”模式启用
-        self.dataset_panel.row_existing.setEnabled(existing)
+        # 已有数据集目录整行 + RGB/RGBD 透明显示控件：仅“使用已有数据集”模式启用
+        for w in (self.dataset_panel.row_existing,
+                  self.dataset_panel.le_rgb_yaml,
+                  self.dataset_panel.cb_rgbd_variant,
+                  self.dataset_panel.le_rgbd_yaml):
+            w.setEnabled(existing)
         self._update_yaml_paths()
         if existing:
             self._check_existing_dataset()
+        # 模式切换后刷新“测试结果”区上方测试数据只读显示（含 RGB/RGBD 路径与 ID 一致性）
+        self._refresh_eval_test_info()
+        self._refresh_ablate_info()
 
     def _on_browse_existing(self):
         start = self._start_dir(self.dataset_panel.le_existing)
@@ -199,20 +214,236 @@ class MainWindow(QMainWindow):
             self._check_existing_dataset()
 
     def _update_yaml_paths(self):
-        """根据当前模式统一计算 self.rgb_yaml / self.rgbd_yaml。"""
+        """根据当前模式统一计算 self.rgb_yaml / self.rgbd_yaml。
+
+        - 使用已有数据集模式：rgb_yaml 固定为 <root>/rgb/data_rgb.yaml；
+          rgbd_yaml 由 _check_existing_dataset 扫描下拉决定，这里不写死。
+        - 准备新数据集模式：prepare 产物固定为 <out>/dataset/<cls>/{rgb,rgbd}/...，
+          rgbd_yaml 仍指 rgbd 子目录（与 prepare 输出一致）。
+        """
         if self.dataset_panel.rb_existing.isChecked():
             root = self.dataset_panel.le_existing.text().strip()
             base = Path(root) if root else None
+            self.rgb_yaml = base / "rgb" / "data_rgb.yaml" if base else None
+            # rgbd_yaml 保持由 _check_existing_dataset 扫描设定，不在此写死
         else:
             out = self.dataset_panel.le_out.text().strip()
             cls = self.dataset_panel.le_class.text().strip() or "hand"
             base = Path(out) / "dataset" / cls if out else None
-        if base:
-            self.rgb_yaml = base / "rgb" / "data_rgb.yaml"
-            self.rgbd_yaml = base / "rgbd" / "data_rgbd.yaml"
+            if base:
+                self.rgb_yaml = base / "rgb" / "data_rgb.yaml"
+                self.rgbd_yaml = base / "rgbd" / "data_rgbd.yaml"
+            else:
+                self.rgb_yaml = None
+                self.rgbd_yaml = None
+
+    # ----------------------------------------------------- 4ch 变体扫描与选择
+    def _parse_variant_yaml(self, yaml_path: Path):
+        """极简解析单个 data_*.yaml，返回 {rgbd:bool, channels:int|None, kpt:int|None}。
+        支持内联列表 kpt_shape:[7,3] 与多行块列表；不依赖 PyYAML。"""
+        try:
+            text = yaml_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            return {"rgbd": False, "channels": None, "kpt": None}
+        rgbd = False
+        channels = None
+        kpt = None
+        in_kpt = False
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("rgbd:"):
+                v = s.split(":", 1)[1].strip().lower().split("#", 1)[0].strip()
+                rgbd = (v == "true")
+                continue
+            if s.startswith("channels:"):
+                try:
+                    channels = int(s.split(":", 1)[1].strip())
+                except ValueError:
+                    channels = None
+                continue
+            if s.startswith("kpt_shape:"):
+                rest = s[len("kpt_shape:"):].split("#", 1)[0].strip()
+                if rest.startswith("[") and rest.endswith("]"):
+                    nums = [x.strip() for x in rest[1:-1].split(",") if x.strip()]
+                    if nums:
+                        try:
+                            kpt = int(nums[0])
+                        except ValueError:
+                            kpt = None
+                else:
+                    in_kpt = True
+                continue
+            if in_kpt:
+                if s.startswith("-"):
+                    try:
+                        kpt = int(s[1:].strip())
+                    except ValueError:
+                        pass
+                    in_kpt = False
+                else:
+                    in_kpt = False
+        return {"rgbd": rgbd, "channels": channels, "kpt": kpt}
+
+    def _scan_rgbd_variants(self, base: Path):
+        """扫描 base 下所有子目录，找出 yaml 同时满足 rgbd:true 且 channels:4 的 4ch 数据集。
+
+        通过读取各目录内 data_*.yaml 的内容判断，不依赖目录名猜测。
+        返回 list[(dir_name, yaml_path)]，按 dir_name 排序。
+        """
+        found = []
+        if not base or not base.exists():
+            return found
+        for sub in sorted(base.iterdir()):
+            if not sub.is_dir():
+                continue
+            for y in sub.glob("data_*.yaml"):
+                meta = self._parse_variant_yaml(y)
+                if meta["rgbd"] is True and meta["channels"] == 4:
+                    found.append((sub.name, y))
+                    break  # 同一变体目录只取首个匹配的 4ch yaml
+        return found
+
+    def _refresh_rgbd_variants(self, base: Path, variants):
+        """刷新 RGBD 变体下拉框并应用当前选择（已保存 > 默认 rgbd_rawdepth > 首个）。
+
+        内部通过 blockSignals 避免填充期间误触发；结束后显式 _apply_rgbd_variant 同步
+        self.rgbd_yaml / “当前 RGBD YAML”显示 / QSettings / 统计区。
+        """
+        self._rgbd_variants = variants
+        cb = self.dataset_panel.cb_rgbd_variant
+        order = [v[0] for v in variants]
+        cb.blockSignals(True)
+        cb.clear()
+        for dir_name, y in variants:
+            cb.addItem(dir_name, str(y))  # item text = 真实目录名（透明），userData = yaml 路径
+        # 选择优先级：已保存 > 默认建议 rgbd_rawdepth > 第一个
+        saved = self._settings.value("rgbd_variant")
+        preferred = "rgbd_rawdepth"
+        if saved in order:
+            default_name = saved
+        elif preferred in order:
+            default_name = preferred
         else:
-            self.rgb_yaml = None
+            default_name = order[0]
+        cb.setCurrentIndex(order.index(default_name))
+        cb.blockSignals(False)
+        self._apply_rgbd_variant(default_name)
+
+    def _on_rgbd_variant_changed(self, dir_name: str):
+        """下拉框切换回调（填充期间 _populating 守卫为 True，忽略中间信号）。"""
+        if getattr(self, "_populating", False):
+            return
+        self._apply_rgbd_variant(dir_name)
+
+    def _apply_rgbd_variant(self, dir_name: str):
+        """应用选中的 RGBD 变体：同步 self.rgbd_yaml、当前 RGBD YAML 显示、统计区、
+        QSettings 持久化，并留下日志（确保选择对用户可见，不静默）。"""
+        variant = next((v for v in self._rgbd_variants if v[0] == dir_name), None)
+        if variant is None:
+            self.dataset_panel.le_rgbd_yaml.setText("-")
+            self.dataset_panel.lbl_rgbd_ds.setText("-")
             self.rgbd_yaml = None
+            return
+        dname, y = variant
+        self.rgbd_yaml = Path(y)
+        self.dataset_panel.le_rgbd_yaml.setText(str(y))
+        self.dataset_panel.lbl_rgbd_ds.setText(dname)
+        self._settings.setValue("rgbd_variant", dname)
+        self._settings.sync()
+        self._log(f"[状态] 当前 RGBD 变体: {dname}  ->  {y}")
+        # 变体切换立即同步“测试结果”区上方测试数据路径显示
+        self._refresh_eval_test_info()
+        self._refresh_ablate_info()
+
+    def _resolve_test_set(self, yaml_path):
+        """解析单个 data_*.yaml 的 path + test 字段，返回 (test_images_dir, count, id_set)。
+
+        - test_images_dir: 真实测试图像目录（path 为相对时按 yaml 父目录解析）
+        - count: 实际图片数量（目录缺失/无图则为 0）
+        - id_set: 测试图像 stem 集合（用于跨 RGB/RGBD 一致性校验；目录缺失则为 None）
+
+        任何无法解析的情况返回 (None, 0, None)。
+        """
+        if not yaml_path or not Path(yaml_path).exists():
+            return None, 0, None
+        try:
+            text = Path(yaml_path).read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            return None, 0, None
+        path_field = None
+        test_field = "images/test"
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("path:"):
+                path_field = s.split(":", 1)[1].strip().split("#", 1)[0].strip()
+            elif s.startswith("test:"):
+                test_field = s.split(":", 1)[1].strip().split("#", 1)[0].strip()
+        if not path_field:
+            return None, 0, None
+        root = Path(path_field)
+        if not root.is_absolute():
+            root = Path(yaml_path).parent / path_field
+        test_dir = root / test_field
+        if not test_dir.exists():
+            return test_dir, 0, None
+        img_ext = (".png", ".jpg", ".jpeg")
+        ids = sorted(p.stem for p in test_dir.iterdir()
+                     if p.is_file() and p.suffix.lower() in img_ext)
+        return test_dir, len(ids), set(ids)
+
+    def _refresh_eval_test_info(self):
+        """刷新“测试结果”区上方“当前测试数据”只读显示：
+
+        - RGB / RGBD 各取当前 self.rgb_yaml / self.rgbd_yaml 的 path+test 解析真实目录与数量
+        - Split 固定 test
+        - Test ID 一致性：RGB test ID 集合 vs RGBD test ID 集合
+
+        不修改任何评估逻辑；仅写回 GUI 只读标签。
+        """
+        ep = self.eval_panel
+        rgb_dir, rgb_cnt, rgb_ids = self._resolve_test_set(self.rgb_yaml)
+        rgbd_dir, rgbd_cnt, rgbd_ids = self._resolve_test_set(self.rgbd_yaml)
+        if rgb_ids is not None and rgbd_ids is not None:
+            if rgb_ids == rgbd_ids:
+                id_text = f"{rgb_cnt}/{rgbd_cnt} 完全一致"
+            else:
+                only_rgb = len(rgb_ids - rgbd_ids)
+                only_rgbd = len(rgbd_ids - rgb_ids)
+                parts = []
+                if only_rgb:
+                    parts.append(f"RGB 独有 {only_rgb}")
+                if only_rgbd:
+                    parts.append(f"RGBD 独有 {only_rgbd}")
+                id_text = "不一致（" + "，".join(parts) + "）"
+        else:
+            id_text = "无法校验（目录缺失）"
+        ep.set_test_info({
+            "rgb_yaml": str(self.rgb_yaml) if self.rgb_yaml else None,
+            "rgb_img": str(rgb_dir) if rgb_dir else None,
+            "rgb_cnt": rgb_cnt,
+            "rgbd_yaml": str(self.rgbd_yaml) if self.rgbd_yaml else None,
+            "rgbd_img": str(rgbd_dir) if rgbd_dir else None,
+            "rgbd_cnt": rgbd_cnt,
+            "split": "test（固定）",
+            "id_text": id_text,
+        })
+
+    def _refresh_ablate_info(self):
+        """刷新“Depth 消融测试”只读信息：使用当前 RGBD 权重 + 当前 RGBD variant YAML。
+
+        - 当前 RGBD YAML：self.rgbd_yaml（随变体切换 / 模式切换同步）
+        - 当前 RGBD best.pt：eval_panel.le_eval_rgbd 输入框实时文本（用户输入即更新）
+        - Split 固定 test（与评估一致，不允许手工改）
+        """
+        ep = self.eval_panel
+        ep.set_ablate_info({
+            "rgbd_yaml": str(self.rgbd_yaml) if self.rgbd_yaml else None,
+            "rgbd_pt": self.eval_panel.le_eval_rgbd.text().strip() or None,
+        })
 
     def _restore_settings(self):
         """启动时恢复上一次保存的路径到对应输入框。"""
@@ -279,11 +510,10 @@ class MainWindow(QMainWindow):
         dk, dc = parse(rgbd_yaml.read_text(encoding="utf-8"))
         return (rk if rk is not None else dk), rc, dc
 
-    def _stat_existing_dataset(self, base: Path):
-        """现场统计已有数据集：数 images 各 split，校验 RGB/RGBD 一致，读 yaml 的
-        kpt_shape/channels。返回 dict（键：total/train/val/test/keypoint_count/
-        rgb_channels/rgbd_channels），无法统计的键为 None；images 目录缺失时返回 None
-        （上层按不完整处理）。只读不写回，不直接设置界面标签。"""
+    def _stat_existing_dataset(self, base: Path, rgbd_sub: str):
+        """现场统计已有数据集：数 images 各 split，校验 RGB 与所选 RGBD 变体一致，
+        读各自 yaml 的 kpt_shape/channels。返回 dict（含 rgb_dataset/rgbd_dataset 来源名），
+        images 目录缺失时返回 None（上层按不完整处理）。只读不写回，不直接设置界面标签。"""
         splits = ("train", "val", "test")
         img_ext = (".png", ".jpg", ".jpeg")
 
@@ -294,17 +524,18 @@ class MainWindow(QMainWindow):
             return sum(1 for p in d.iterdir() if p.suffix.lower() in img_ext)
 
         rgb_counts = {s: count_imgs(f"rgb/images/{s}") for s in splits}
-        rgbd_counts = {s: count_imgs(f"rgbd/images/{s}") for s in splits}
+        rgbd_counts = {s: count_imgs(f"{rgbd_sub}/images/{s}") for s in splits}
         if any(c is None for c in rgb_counts.values()) or any(c is None for c in rgbd_counts.values()):
             return None
         mismatch = [s for s in splits if rgb_counts[s] != rgbd_counts[s]]
         if mismatch:
-            self._log("[警告] RGB 与 RGBD 各 split 数量不一致: " + ", ".join(
-                f"{s}: rgb={rgb_counts[s]} rgbd={rgbd_counts[s]}" for s in mismatch))
+            self._log("[警告] RGB 与所选 RGBD 变体各 split 数量不一致: " + ", ".join(
+                f"{s}: rgb={rgb_counts[s]} {rgbd_sub}={rgbd_counts[s]}" for s in mismatch))
         total = sum(rgb_counts.values())
         try:
             kpt, rc, dc = self._parse_yaml_meta(
-                base / "rgb" / "data_rgb.yaml", base / "rgbd" / "data_rgbd.yaml")
+                base / "rgb" / "data_rgb.yaml",
+                Path(self.rgbd_yaml) if self.rgbd_yaml else base / rgbd_sub)
         except Exception as e:  # noqa: BLE001
             self._log(f"[警告] 读取 yaml 元数据失败: {e}")
             kpt, rc, dc = None, None, None
@@ -316,31 +547,54 @@ class MainWindow(QMainWindow):
             "keypoint_count": kpt,
             "rgb_channels": rc,
             "rgbd_channels": dc,
+            "rgb_dataset": "rgb",
+            "rgbd_dataset": rgbd_sub,
         }
 
     def _check_existing_dataset(self):
-        """检查已选数据集根目录下两个 yaml 是否齐备，齐备则以现场统计为兜底；
-        若 dataset_report.json 存在，用其有效字段覆盖、缺失/None 字段用现场统计补齐。"""
+        """检查已选数据集根目录：
+
+        - RGB 固定识别 <root>/rgb/data_rgb.yaml（必须存在）。
+        - RGBD 自动扫描 root 下所有满足 yaml rgbd:true & channels:4 的 4ch 变体，
+          下拉供用户选择；不再写死为 rgbd/data_rgbd.yaml。
+        - 选中变体后做现场统计；若 dataset_report.json 存在，用其有效字段覆盖补齐。
+        """
         root = self.dataset_panel.le_existing.text().strip()
         if not root:
             return
         base = Path(root)
         ry = base / "rgb" / "data_rgb.yaml"
-        dy = base / "rgbd" / "data_rgbd.yaml"
-        if not ry.exists() or not dy.exists():
-            self._log(f"[错误] 已有数据集目录缺少 yaml: "
-                      f"rgb/data_rgb.yaml={ry.exists()} rgbd/data_rgbd.yaml={dy.exists()}")
+        if not ry.exists():
+            self._log(f"[错误] 已有数据集缺少 RGB yaml: rgb/data_rgb.yaml ({ry})")
             self.dataset_panel.reset_stats()
             self.dataset_panel.set_ready("已有数据集不完整")
             self.rgb_yaml = None
             self.rgbd_yaml = None
+            self.dataset_panel.le_rgb_yaml.setText("-")
+            self.dataset_panel.cb_rgbd_variant.clear()
+            self.dataset_panel.le_rgbd_yaml.setText("-")
             return
-        # 两个 yaml 齐备即可用于训练
+        # RGB 固定路径，只读展示
         self.rgb_yaml = ry
-        self.rgbd_yaml = dy
+        self.dataset_panel.le_rgb_yaml.setText(str(ry))
 
-        # 1) 现场统计：无论 report 是否存在都先做，作为缺失字段兜底
-        stat = self._stat_existing_dataset(base)
+        # 扫描所有 4ch 变体
+        variants = self._scan_rgbd_variants(base)
+        if not variants:
+            self._log("[错误] 未找到任何 4 通道 RGBD 数据集（需 yaml 声明 rgbd:true 且 channels:4）")
+            self.dataset_panel.reset_stats()
+            self.dataset_panel.set_ready("已有数据集不完整")
+            self.rgbd_yaml = None
+            self.dataset_panel.cb_rgbd_variant.clear()
+            self.dataset_panel.le_rgbd_yaml.setText("-")
+            return
+
+        # 刷新下拉框并应用当前选择（内部设定 self.rgbd_yaml + 显示 + 持久化）
+        self._refresh_rgbd_variants(base, variants)
+
+        # 1) 现场统计（用选中的 RGBD 变体目录）：无论 report 是否存在都先做
+        rgbd_sub = self.rgbd_yaml.parent.name
+        stat = self._stat_existing_dataset(base, rgbd_sub)
         if stat is None:
             self._log("[警告] 已有数据集 images 目录缺失，无法现场统计")
             self.dataset_panel.reset_stats()
@@ -379,7 +633,7 @@ class MainWindow(QMainWindow):
         else:
             ready = "已有数据集已加载（现场统计）"
 
-        # 3) 回写显示（None 值显示 -）
+        # 3) 回写显示（None 值显示 -；含 RGB/RGBD 数据集来源）
         self.dataset_panel.set_stats(merged, ready)
         self._log("[状态] 已有数据集已加载")
 
@@ -415,7 +669,7 @@ class MainWindow(QMainWindow):
         for b in (self.dataset_panel.btn_prepare, self.train_panel.btn_train_rgb,
                   self.train_panel.btn_build, self.train_panel.btn_train_rgbd,
                   self.eval_panel.btn_eval_rgb, self.eval_panel.btn_eval_rgbd,
-                  self.eval_panel.btn_eval_cmp):
+                  self.eval_panel.btn_eval_cmp, self.eval_panel.btn_ablate):
             b.setEnabled(not disable)
 
     def _restore_controls(self):
@@ -432,6 +686,7 @@ class MainWindow(QMainWindow):
         self.eval_panel.btn_eval_rgb.setEnabled(True)
         self.eval_panel.btn_eval_rgbd.setEnabled(True)
         self.eval_panel.btn_eval_cmp.setEnabled(True)
+        self.eval_panel.btn_ablate.setEnabled(True)
 
     def closeEvent(self, event):
         self._save_settings()
@@ -468,16 +723,27 @@ class MainWindow(QMainWindow):
 
     def _on_prepare(self):
         rgb = self.dataset_panel.le_rgb.text().strip()
-        depth = self.dataset_panel.le_depth.text().strip()
+        depth_npy = self.dataset_panel.le_depth_npy.text().strip()
         label = self.dataset_panel.le_label.text().strip()
         out = self.dataset_panel.le_out.text().strip()
         cls = self.dataset_panel.le_class.text().strip() or "hand"
-        if not (rgb and depth and label and out):
-            self._log("[错误] RGB / Depth / Labels / 输出目录 必须全部填写")
+        if not (rgb and depth_npy and label and out):
+            self._log("[错误] RGB / Raw Depth NPY / Labels / 输出目录 必须全部填写")
+            return
+        # Depth low/high：允许用户编辑，缺省回退 1100/1850
+        try:
+            low = float(self.dataset_panel.le_low.text().strip() or "1100")
+            high = float(self.dataset_panel.le_high.text().strip() or "1850")
+        except ValueError:
+            self._log("[错误] Depth low/high(mm) 必须为数字")
+            return
+        if not (high > low):
+            self._log("[错误] Depth low(mm) 必须严格小于 high(mm)")
             return
         self._run("prepare", _SCRIPTS["prepare"],
-                  ["--rgb_dir", rgb, "--depth_dir", depth,
-                   "--label_dir", label, "--output_dir", out, "--class_name", cls],
+                  ["--rgb_dir", rgb, "--depth_npy_dir", depth_npy,
+                   "--label_dir", label, "--output_dir", out, "--class_name", cls,
+                   "--depth_low", str(low), "--depth_high", str(high)],
                   "处理中")
 
     def _derive_4ch_path(self, base_text: str) -> Path:
@@ -556,6 +822,26 @@ class MainWindow(QMainWindow):
         self._start_eval_leg("rgbd")
 
     def _on_eval_cmp(self):
+        # 对比测试启动前再次校验 RGB 与 RGBD test ID 一致性，不一致则拒绝并打印错误
+        rgb_dir, rgb_cnt, rgb_ids = self._resolve_test_set(self.rgb_yaml)
+        rgbd_dir, rgbd_cnt, rgbd_ids = self._resolve_test_set(self.rgbd_yaml)
+        if rgb_ids is None or rgbd_ids is None:
+            self._log("[错误] 对比测试被拒绝：RGB 或 RGBD test 目录缺失/无法解析，"
+                      "请先确认数据集已正确加载")
+            self._set_status("对比测试被拒绝")
+            return
+        if rgb_ids != rgbd_ids:
+            only_rgb = sorted(rgb_ids - rgbd_ids)
+            only_rgbd = sorted(rgbd_ids - rgb_ids)
+            msg = (f"[错误] 对比测试被拒绝：RGB 与 RGBD test ID 不一致 "
+                   f"(RGB={rgb_cnt}, RGBD={rgbd_cnt})")
+            if only_rgb:
+                msg += f" | RGB 独有: {only_rgb[:10]}{'...' if len(only_rgb) > 10 else ''}"
+            if only_rgbd:
+                msg += f" | RGBD 独有: {only_rgbd[:10]}{'...' if len(only_rgbd) > 10 else ''}"
+            self._log(msg)
+            self._set_status("对比测试被拒绝")
+            return
         # 依次测试 RGB 与 RGBD，最后对比差值（不重复链式启动：队首 pop 后即交给 _on_finished 续跑）
         self.eval_results.clear()
         self.eval_chain = ["rgb", "rgbd"]
@@ -590,6 +876,42 @@ class MainWindow(QMainWindow):
                   f"评估{name}中")
         return True
 
+    def _build_ablate_args(self):
+        """构造 Depth 消融子进程参数（不直接启动）：使用当前 RGBD 权重 + 当前 RGBD YAML，
+        仅 true_depth / zero_depth 两变体，split 固定 test，输出到 runs/ablation/depth_ablation_gui。
+
+        权重路径与 YAML 均来自 GUI 当前状态（不写死），便于 smoke test 直接校验参数。
+        """
+        weights = self.eval_panel.le_eval_rgbd.text().strip()
+        yaml = self.rgbd_yaml
+        out = _REPO_ROOT / "runs" / "ablation" / "depth_ablation_gui"
+        args = ["--weights", weights,
+                "--rgbd-yaml", str(yaml) if yaml else "",
+                "--variants", "true_depth", "zero_depth",
+                "--split", "test",
+                "--out", str(out)]
+        return {"weights": weights, "yaml": str(yaml) if yaml else None, "args": args}
+
+    def _on_ablate_depth(self):
+        info = self._build_ablate_args()
+        weights, ypath = info["weights"], info["yaml"]
+        if not weights or not Path(weights).exists():
+            self._log(f"[错误] RGBD 权重不存在: {weights}")
+            return
+        if not ypath or not Path(ypath).exists():
+            self._log("[错误] 未确定 RGBD data yaml：请先在“使用已有数据集”选择数据集目录")
+            return
+        test_dir, test_cnt, _ = self._resolve_test_set(self.rgbd_yaml)
+        # 启动前明确打印本次消融使用的模型 / 数据 / split / 变体 / test 信息
+        self._log("[Depth Ablation]")
+        self._log(f"Model: {weights}")
+        self._log(f"Data: {ypath}")
+        self._log("Split: test")
+        self._log("Variants:\n- true_depth\n- zero_depth")
+        self._log(f"Test images: {test_dir}")
+        self._log(f"Test count: {test_cnt}")
+        self._run("ablate", _SCRIPTS["ablate"], info["args"], "Depth 消融中")
+
     def _finish_compare(self):
         r = self.eval_results.get("rgb")
         d = self.eval_results.get("rgbd")
@@ -615,6 +937,12 @@ class MainWindow(QMainWindow):
                         self._last_eval_result = json.loads(line.split("POSE_EVAL_JSON", 1)[1].strip())
                     except Exception as e:  # noqa: BLE001
                         self._log(f"[警告] 评估结果 JSON 解析失败: {e}")
+                elif "DEPTH_ABLATION_JSON" in line:
+                    try:
+                        self._last_ablate_result = json.loads(
+                            line.split("DEPTH_ABLATION_JSON", 1)[1].strip())
+                    except Exception as e:  # noqa: BLE001
+                        self._log(f"[警告] 消融结果 JSON 解析失败: {e}")
 
     def _on_stderr(self):
         data = bytes(self.process.readAllStandardError()).decode("utf-8", "replace").rstrip("\n")
@@ -675,6 +1003,24 @@ class MainWindow(QMainWindow):
             self.current_op = None
             return
 
+        # ---- Depth 消融 (ablate) 分支 ----
+        if self.current_op == "ablate":
+            if self.user_stopped:
+                self._log("[结束] 用户已停止当前任务")
+                self._set_status("已停止")
+            elif code == 0 and self._last_ablate_result:
+                r = self._last_ablate_result
+                self._log("[Depth Ablation] 完成")
+                self._log(f"  结论: {r.get('conclusion', '')}")
+                self._set_status("Depth 消融完成")
+            else:
+                self._log(f"[警告] Depth 消融失败 exit_code={code}，未能获取结果")
+                self._set_status("Depth 消融失败")
+            self.status_log_panel.btn_stop.setEnabled(False)
+            self._restore_controls()
+            self.current_op = None
+            return
+
         if self.user_stopped:
             # 用户主动停止：状态显示“已停止”，不归为失败
             self._log("[结束] 用户已停止当前任务")
@@ -716,3 +1062,6 @@ class MainWindow(QMainWindow):
         else:
             dp.lbl_ready.setText("校验未通过")
             self._log("[状态] 数据集校验未通过，请检查")
+        # 准备模式完成后同步测试数据只读显示
+        self._refresh_eval_test_info()
+        self._refresh_ablate_info()

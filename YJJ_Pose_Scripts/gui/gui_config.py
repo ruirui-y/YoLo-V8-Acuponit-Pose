@@ -14,6 +14,7 @@ _SCRIPTS = {
     "train_rgbd": _REPO_ROOT / "YJJ_Pose_Scripts" / "03_train" / "train_rgbd_pose.py",
     "build": _REPO_ROOT / "YJJ_Pose_Scripts" / "02_model" / "build_rgbd_pose_weights.py",
     "eval": _REPO_ROOT / "YJJ_Pose_Scripts" / "04_eval" / "test_pose_rgbd.py",
+    "ablate": _REPO_ROOT / "YJJ_Pose_Scripts" / "04_eval" / "ablate_rgbd_depth.py",
 }
 # 权重目录：基础母版固定放此处，4ch 权重统一生成到 4ch/ 子目录
 _WEIGHTS_DIR = _REPO_ROOT / "YJJ_Pose_Scripts" / "weights"

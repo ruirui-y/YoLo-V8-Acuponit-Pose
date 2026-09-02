@@ -28,7 +28,40 @@ class EvalPanel(QWidget):
         self.le_eval_rgbd = QLineEdit()
         self.row_eval_rgbd = main._with_browse(self.le_eval_rgbd, dir=False, filt="Weights (*.pt)")
         self.le_eval_rgbd.editingFinished.connect(main._save_settings)
+        self.le_eval_rgbd.editingFinished.connect(main._refresh_ablate_info)
         ft.addRow("RGBD best.pt:", self.row_eval_rgbd)
+
+        # 当前测试数据（只读，split 固定为 test，不允许手工修改）
+        self.lbl_rgb_test_yaml = QLabel("-")
+        ft.addRow("RGB Test YAML:", self.lbl_rgb_test_yaml)
+        self.lbl_rgb_test_img = QLabel("-")
+        ft.addRow("RGB Test images:", self.lbl_rgb_test_img)
+        self.lbl_rgb_test_cnt = QLabel("-")
+        ft.addRow("RGB Test count:", self.lbl_rgb_test_cnt)
+        self.lbl_rgbd_test_yaml = QLabel("-")
+        ft.addRow("RGBD Test YAML:", self.lbl_rgbd_test_yaml)
+        self.lbl_rgbd_test_img = QLabel("-")
+        ft.addRow("RGBD Test images:", self.lbl_rgbd_test_img)
+        self.lbl_rgbd_test_cnt = QLabel("-")
+        ft.addRow("RGBD Test count:", self.lbl_rgbd_test_cnt)
+        self.lbl_split = QLabel("test（固定）")
+        ft.addRow("Split:", self.lbl_split)
+        self.lbl_id_consistency = QLabel("-")
+        ft.addRow("Test ID一致性:", self.lbl_id_consistency)
+
+        # ---- Depth 消融测试（公平性对照：当前 RGBD 权重 + 当前 RGBD YAML，split 固定 test）----
+        self.lbl_ablate_title = QLabel("Depth Ablation: True Depth vs Zero Depth")
+        ft.addRow(self.lbl_ablate_title)
+        self.lbl_ablate_split = QLabel("test（固定）")
+        ft.addRow("Split:", self.lbl_ablate_split)
+        self.lbl_ablate_yaml = QLabel("-")
+        ft.addRow("当前 RGBD YAML:", self.lbl_ablate_yaml)
+        self.lbl_ablate_pt = QLabel("-")
+        ft.addRow("当前 RGBD best.pt:", self.lbl_ablate_pt)
+        self.btn_ablate = QPushButton("Depth 消融测试")
+        self.btn_ablate.clicked.connect(main._on_ablate_depth)
+        ft.addRow(self.btn_ablate)
+
         # 动作按钮
         self.btn_eval_rgb = QPushButton("测试 RGB")
         self.btn_eval_rgb.clicked.connect(main._on_eval_rgb)
@@ -96,3 +129,29 @@ class EvalPanel(QWidget):
                     l.setText("-")
         self.lbl_cmp_box.setText("-")
         self.lbl_cmp_pose.setText("-")
+
+    def set_test_info(self, info):
+        """写回“当前测试数据”只读区（split 固定 test，用户不可编辑）：
+
+        info 键：rgb_yaml / rgb_img / rgb_cnt / rgbd_yaml / rgbd_img / rgbd_cnt /
+        id_text（一致性结论文本）。任何缺失 / None / 0 值以 “-” 显示。
+        """
+        self.lbl_rgb_test_yaml.setText(info.get("rgb_yaml") or "-")
+        self.lbl_rgb_test_img.setText(info.get("rgb_img") or "-")
+        self.lbl_rgb_test_cnt.setText(
+            str(info["rgb_cnt"]) if info.get("rgb_cnt") is not None else "-")
+        self.lbl_rgbd_test_yaml.setText(info.get("rgbd_yaml") or "-")
+        self.lbl_rgbd_test_img.setText(info.get("rgbd_img") or "-")
+        self.lbl_rgbd_test_cnt.setText(
+            str(info["rgbd_cnt"]) if info.get("rgbd_cnt") is not None else "-")
+        self.lbl_split.setText(info.get("split") or "test（固定）")
+        self.lbl_id_consistency.setText(info.get("id_text") or "-")
+
+    def set_ablate_info(self, info):
+        """写回“Depth 消融测试”只读信息：当前 RGBD YAML / 当前 RGBD best.pt（split 固定 test）。
+
+        info 键：rgbd_yaml（当前 RGBD variant 完整路径）/ rgbd_pt（GUI 当前 RGBD best.pt 路径）。
+        缺失 / None 以 “-” 显示。
+        """
+        self.lbl_ablate_yaml.setText(info.get("rgbd_yaml") or "-")
+        self.lbl_ablate_pt.setText(info.get("rgbd_pt") or "-")
