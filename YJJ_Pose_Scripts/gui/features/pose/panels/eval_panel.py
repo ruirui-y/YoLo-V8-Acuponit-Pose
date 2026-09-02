@@ -1,37 +1,52 @@
-"""测试结果面板（test 集评估：RGB vs RGBD 论文对比，纯 UI，不启动子进程）。
+"""测试结果面板（信号驱动，与 MainWindow / Controller 完全解耦）。
 
-包含：RGB best.pt / RGBD best.pt 选择、测试 RGB / 测试 RGBD / 对比测试 按钮、
-RGB 与 RGBD 的 Box/Pose 指标展示块、对比结果展示。
-
-按钮的 clicked 信号连接到 MainWindow 的对应动作；本面板只负责控件与展示：
-- display_result(leg, res)：写回单条 leg 的 Box/Pose 8 项指标
-- display_compare(r, d, db_box, db_pose)：写回对比差值
-- clear_results()：清空所有指标显示
+Panel 只负责控件创建 / 展示 / 发信号；按钮 clicked 连接到自己的 signal，
+Controller 连接这些 signal 并处理业务逻辑。
 """
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QVBoxLayout, QWidget,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QVBoxLayout, QWidget,
 )
+
+from gui_config import _REPO_ROOT
 
 
 class EvalPanel(QWidget):
-    def __init__(self, main):
-        super().__init__()
-        # ---- 测试结果（test 集评估：RGB vs RGBD 论文对比）----
+    # ---- 对外信号 ----
+    evalRgbRequested = Signal()
+    evalRgbdRequested = Signal()
+    compareRequested = Signal()
+    depthAblationRequested = Signal()
+    rgbdWeightChanged = Signal()            # RGBD best.pt 路径变更
+    settingsDirty = Signal()                # 路径有变动，请求保存 QSettings
+
+    def __init__(self, parent=None, start_dir_provider=None):
+        super().__init__(parent)
+        # browse 起始目录 QSettings fallback 提供者（由 Controller 注入，可空）
+        self._start_dir_provider = start_dir_provider
+        self._build_ui()
+
+    def set_start_dir_provider(self, provider):
+        """供 Controller 在构造完成后注入 QSettings fallback 路径查询回调。"""
+        self._start_dir_provider = provider
+
+    def _build_ui(self):
         gt = QGroupBox("测试结果")
         ft = QFormLayout(gt)
-        # 权重选择（默认尝试自动定位本次训练产物，可手动改）
+
+        # ---- 权重选择 ----
         self.le_eval_rgb = QLineEdit()
-        self.row_eval_rgb = main._with_browse(self.le_eval_rgb, dir=False, filt="Weights (*.pt)")
-        self.le_eval_rgb.editingFinished.connect(main._save_settings)
+        self.row_eval_rgb = self._make_browse_row(self.le_eval_rgb, is_dir=False, filt="Weights (*.pt)")
+        self.le_eval_rgb.editingFinished.connect(self.settingsDirty.emit)
         ft.addRow("RGB best.pt:", self.row_eval_rgb)
         self.le_eval_rgbd = QLineEdit()
-        self.row_eval_rgbd = main._with_browse(self.le_eval_rgbd, dir=False, filt="Weights (*.pt)")
-        self.le_eval_rgbd.editingFinished.connect(main._save_settings)
-        self.le_eval_rgbd.editingFinished.connect(main._refresh_ablate_info)
+        self.row_eval_rgbd = self._make_browse_row(self.le_eval_rgbd, is_dir=False, filt="Weights (*.pt)")
+        self.le_eval_rgbd.editingFinished.connect(self.settingsDirty.emit)
+        self.le_eval_rgbd.editingFinished.connect(self.rgbdWeightChanged.emit)
         ft.addRow("RGBD best.pt:", self.row_eval_rgbd)
 
-        # 当前测试数据（只读，split 固定为 test，不允许手工修改）
+        # ---- 当前测试数据（只读，split 固定为 test）----
         self.lbl_rgb_test_yaml = QLabel("-")
         ft.addRow("RGB Test YAML:", self.lbl_rgb_test_yaml)
         self.lbl_rgb_test_img = QLabel("-")
@@ -49,7 +64,7 @@ class EvalPanel(QWidget):
         self.lbl_id_consistency = QLabel("-")
         ft.addRow("Test ID一致性:", self.lbl_id_consistency)
 
-        # ---- Depth 消融测试（公平性对照：当前 RGBD 权重 + 当前 RGBD YAML，split 固定 test）----
+        # ---- Depth 消融测试 ----
         self.lbl_ablate_title = QLabel("Depth Ablation: True Depth vs Zero Depth")
         ft.addRow(self.lbl_ablate_title)
         self.lbl_ablate_split = QLabel("test（固定）")
@@ -59,28 +74,30 @@ class EvalPanel(QWidget):
         self.lbl_ablate_pt = QLabel("-")
         ft.addRow("当前 RGBD best.pt:", self.lbl_ablate_pt)
         self.btn_ablate = QPushButton("Depth 消融测试")
-        self.btn_ablate.clicked.connect(main._on_ablate_depth)
+        self.btn_ablate.clicked.connect(self.depthAblationRequested.emit)
         ft.addRow(self.btn_ablate)
 
-        # 动作按钮
+        # ---- 动作按钮 ----
         self.btn_eval_rgb = QPushButton("测试 RGB")
-        self.btn_eval_rgb.clicked.connect(main._on_eval_rgb)
+        self.btn_eval_rgb.clicked.connect(self.evalRgbRequested.emit)
         self.btn_eval_rgbd = QPushButton("测试 RGBD")
-        self.btn_eval_rgbd.clicked.connect(main._on_eval_rgbd)
+        self.btn_eval_rgbd.clicked.connect(self.evalRgbdRequested.emit)
         self.btn_eval_cmp = QPushButton("对比测试")
-        self.btn_eval_cmp.clicked.connect(main._on_eval_cmp)
+        self.btn_eval_cmp.clicked.connect(self.compareRequested.emit)
         heval = QHBoxLayout()
         heval.addWidget(self.btn_eval_rgb)
         heval.addWidget(self.btn_eval_rgbd)
         heval.addWidget(self.btn_eval_cmp)
         ft.addRow(heval)
-        # 指标展示块（split=test）
+
+        # ---- 指标展示块（split=test）----
         self.eval_lbl = {"rgb": {}, "rgbd": {}}
         self.eval_lbl["rgb"]["box"] = self._add_metric_block(ft, "RGB Box (split=test)")
         self.eval_lbl["rgb"]["pose"] = self._add_metric_block(ft, "RGB Pose (split=test)")
         self.eval_lbl["rgbd"]["box"] = self._add_metric_block(ft, "RGBD Box (split=test)")
         self.eval_lbl["rgbd"]["pose"] = self._add_metric_block(ft, "RGBD Pose (split=test)")
-        # 对比（差值 = RGBD - RGB）
+
+        # ---- 对比（差值 = RGBD - RGB）----
         self.lbl_cmp_box = QLabel("-")
         self.lbl_cmp_pose = QLabel("-")
         ft.addRow("RGB vs RGBD Box mAP50-95:", self.lbl_cmp_box)
@@ -89,7 +106,40 @@ class EvalPanel(QWidget):
         v = QVBoxLayout(self)
         v.addWidget(gt)
 
-    # ---- 纯展示方法 ----
+    # ---- 内部：浏览对话框 ----
+    def _make_browse_row(self, le, is_dir=False, filt="All (*)"):
+        """创建 QLineEdit + "选择..." 按钮的组合控件。"""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(le)
+        b = QPushButton("选择...")
+        b.clicked.connect(lambda: self._browse(le, is_dir, filt))
+        h.addWidget(b)
+        return w
+
+    def _resolve_start(self, le):
+        """文件/目录对话框起始目录优先级：当前输入框 > QSettings 上次 > 项目根。"""
+        cur = le.text().strip()
+        if cur:
+            return cur
+        if self._start_dir_provider is not None:
+            v = self._start_dir_provider(le)
+            if v:
+                return v
+        return str(_REPO_ROOT)
+
+    def _browse(self, le, is_dir, filt):
+        """打开文件/目录对话框并设置文本。"""
+        start = self._resolve_start(le)
+        if is_dir:
+            p = QFileDialog.getExistingDirectory(self, "选择目录", start)
+        else:
+            p, _ = QFileDialog.getOpenFileName(self, "选择文件", start, filt)
+        if p:
+            le.setText(p)
+            self.settingsDirty.emit()
+
     def _add_metric_block(self, parent, title):
         """在 parent(QFormLayout) 下新增一个指标分组，返回 {"p","r","map50","map"} 四个 QLabel。"""
         gb = QGroupBox(title)
@@ -102,6 +152,7 @@ class EvalPanel(QWidget):
         parent.addRow(gb)
         return lbl
 
+    # ---- 公开：展示方法 ----
     def display_result(self, leg, res):
         """写回单个 leg（rgb/rgbd）的 Box/Pose 8 项指标。"""
         blk = self.eval_lbl[leg]
@@ -122,7 +173,7 @@ class EvalPanel(QWidget):
             f"RGB={r['pose_map']:.4f}  RGBD={d['pose_map']:.4f}  差值(RGBD-RGB)={db_pose:+.4f}")
 
     def clear_results(self):
-        """清空所有指标展示（保留上次结果直到下一次评估覆盖；此方法供需要时调用）。"""
+        """清空所有指标展示。"""
         for leg in ("rgb", "rgbd"):
             for kind in ("box", "pose"):
                 for l in self.eval_lbl[leg][kind].values():
@@ -131,11 +182,7 @@ class EvalPanel(QWidget):
         self.lbl_cmp_pose.setText("-")
 
     def set_test_info(self, info):
-        """写回“当前测试数据”只读区（split 固定 test，用户不可编辑）：
-
-        info 键：rgb_yaml / rgb_img / rgb_cnt / rgbd_yaml / rgbd_img / rgbd_cnt /
-        id_text（一致性结论文本）。任何缺失 / None / 0 值以 “-” 显示。
-        """
+        """写回"当前测试数据"只读区（split 固定 test）。"""
         self.lbl_rgb_test_yaml.setText(info.get("rgb_yaml") or "-")
         self.lbl_rgb_test_img.setText(info.get("rgb_img") or "-")
         self.lbl_rgb_test_cnt.setText(
@@ -148,10 +195,13 @@ class EvalPanel(QWidget):
         self.lbl_id_consistency.setText(info.get("id_text") or "-")
 
     def set_ablate_info(self, info):
-        """写回“Depth 消融测试”只读信息：当前 RGBD YAML / 当前 RGBD best.pt（split 固定 test）。
-
-        info 键：rgbd_yaml（当前 RGBD variant 完整路径）/ rgbd_pt（GUI 当前 RGBD best.pt 路径）。
-        缺失 / None 以 “-” 显示。
-        """
+        """写回"Depth 消融测试"只读信息。"""
         self.lbl_ablate_yaml.setText(info.get("rgbd_yaml") or "-")
         self.lbl_ablate_pt.setText(info.get("rgbd_pt") or "-")
+
+    def set_operation_buttons_enabled(self, enabled):
+        """供 Controller 在任务运行期间控制评估/消融按钮启停。"""
+        self.btn_eval_rgb.setEnabled(enabled)
+        self.btn_eval_rgbd.setEnabled(enabled)
+        self.btn_eval_cmp.setEnabled(enabled)
+        self.btn_ablate.setEnabled(enabled)
