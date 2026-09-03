@@ -41,15 +41,16 @@ class LamaPage(QWidget):
     prevRequested = Signal()
     nextRequested = Signal()
     brushRadiusChanged = Signal(int)       # 画笔半径
-    loadModelRequested = Signal()          # 加载 LaMa ONNX 模型
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, log_sink=None):
         super().__init__(parent)
+        # ---- 应用级共享日志 sink（MainWindow 注入 SharedLogPanel.append_log）----
+        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
         self._build_ui()
         # ---- 创建 Controller（连接本页 signals + 初始化）----
         # 延迟 import 避免 widgets 模块在 LamaPage import 阶段被循环依赖
         from .lama_controller import LamaController
-        self.controller = LamaController(self)
+        self.controller = LamaController(self, log_sink=self._log_sink)
 
     # ================================================================ UI 构建
     def _build_ui(self):
@@ -63,7 +64,6 @@ class LamaPage(QWidget):
         root.addWidget(self._toolbar)
 
         self._add_action("Open", "打开单张或文件夹中的图片", self.openRequested)
-        self._add_action("LoadModel", "加载 LaMa ONNX 模型", self.loadModelRequested)
         self._add_action("ClearMask", "清除当前涂抹", self.clearMaskRequested)
         self._add_action("SetRef", "将当前 mask 设为基准", self.setRefRequested)
         self._add_action("TestOne", "测试基准追踪效果", self.testOneRequested)
@@ -75,7 +75,7 @@ class LamaPage(QWidget):
         self._toolbar.addWidget(QLabel("Brush:"))
         self._brush_slider = QSlider(Qt.Orientation.Horizontal)
         self._brush_slider.setRange(1, 80)
-        self._brush_slider.setValue(10)
+        self._brush_slider.setValue(9)
         self._brush_slider.setFixedWidth(160)
         self._toolbar.addWidget(self._brush_slider)
 

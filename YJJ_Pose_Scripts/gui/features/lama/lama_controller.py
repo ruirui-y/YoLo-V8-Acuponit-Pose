@@ -116,15 +116,44 @@ class _InpaintWorker(QThread):
         self.finished_with_result.emit(result)
 
 
+class _ModelLoadWorker(QThread):
+    """在后台线程加载 LaMa ONNX 模型（GPU-only），避免 GUI 卡死。
+
+    职责只有：service.load_model(model_path)。
+    通过 finished_with_result 信号把结果回到主线程：
+        (success: bool, model_path: str, error: str)
+    """
+    finished_with_result = Signal(bool, str, str)
+
+    def __init__(self, service, model_path: str, parent=None):
+        # parent 强制 None，避免 page 销毁时 "QThread: Destroyed while still running"
+        super().__init__(None)
+        self._service = service
+        self._model_path = model_path
+
+    def run(self):
+        """在后台线程加载模型。"""
+        try:
+            ok = self._service.load_model(self._model_path)
+        except Exception as e:
+            ok = False
+            err = str(e)
+        else:
+            # load_model 返回 False 时真实错误在 service.last_error()
+            err = self._service.last_error() if not ok else ""
+        self.finished_with_result.emit(ok, self._model_path, err)
+
+
 class LamaController(QObject):
     """LaMa 工作流协调器：连接 Page 信号 -> 调用 services / 更新 Page。"""
 
-    def __init__(self, page):
+    def __init__(self, page, log_sink=None):
         super().__init__(page)
         self._page = page
 
-        # ---- 设置 ----
-        self._settings_store = SettingsStore()
+        # ---- 应用级共享日志 sink（SharedLogPanel.append_log）----
+        # 与 PoseController 用的是同一个 callable；状态栏仍走 page.set_status_text。
+        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
 
         # ---- 状态 ----
         self._image_files = []          # 当前文件夹所有图片绝对路径
@@ -137,12 +166,21 @@ class LamaController(QObject):
         self._reference_alignment_service = ReferenceAlignmentService()
         self._lama_inference_service = LamaInferenceService()
 
+        # ---- SettingsStore：仅用于记住最近一次 Open/TestOne 的图片目录 ----
+        # 模型路径是固定的（features/lama/models/lama_fp32.onnx），这里绝不恢复
+        # 之前删除的 lama/model_path / YJJ_LAMA_MODEL / 手动 LoadModel。
+        self._settings_store = SettingsStore()
+
         # ---- 当前 prediction（A 键结果，供 Q 流程一对一匹配）----
         self._current_prediction = None       # PredictionResult
 
         # ---- Q 原子 Commit 状态 ----
         self._commit_snapshot = None          # _CommitSnapshot（Q 流程进行中持有）
         self._inpaint_worker = None           # _InpaintWorker（Q 后台推理线程）
+
+        # ---- 启动期异步模型加载状态（GPU-only）----
+        self._model_load_worker = None        # _ModelLoadWorker（后台加载 ONNX）
+        self._model_load_failed = False       # 模型后台加载最终失败标记
 
         # ---- TestOne 异步推理状态（P1-2）----
         # _test_one_pending 持有 (base_qimg, prediction_result, debug_result) 供 callback 使用
@@ -153,8 +191,18 @@ class LamaController(QObject):
         self._connect_signals()
         self._refresh_status()
 
-        # ---- 启动时自动加载 LaMa 模型（保留 LoadModel 按钮作为故障/换模型入口）----
-        self._try_auto_load_model()
+        # ---- 启动时异步加载 LaMa 模型（固定 GPU-only 路径，不阻塞 GUI 主线程）----
+        self._start_model_load()
+
+    # ================================================================ 共享日志
+    def _log(self, text):
+        """写应用级共享日志（带 [LaMa] 前缀）。
+
+        只在关键事件写：模型加载 / ORT providers / Open / SetRef / TestOne /
+        Assist / Q 全流程 / 输出路径 / rolling reference 更新。
+        refresh_status 之类的高频状态刷新绝不写日志。
+        """
+        self._log_sink(f"[LaMa] {text}")
 
     # ================================================================ Worker 生命周期（P1-4）
     def cleanup_worker(self):
@@ -169,6 +217,11 @@ class LamaController(QObject):
             self._inpaint_worker = None
             self._cleanup_running_worker(w)
         self._commit_snapshot = None
+        # Model load worker（窗口关闭时若仍在加载，等待/终止，避免 QThread destroyed while running）
+        if self._model_load_worker is not None:
+            w = self._model_load_worker
+            self._model_load_worker = None
+            self._cleanup_running_worker(w)
         # TestOne worker
         if self._test_one_worker is not None:
             w = self._test_one_worker
@@ -197,7 +250,6 @@ class LamaController(QObject):
     def _connect_signals(self):
         p = self._page
         p.openRequested.connect(self._on_open)
-        p.loadModelRequested.connect(self._on_load_model)
         p.clearMaskRequested.connect(self._on_clear_mask)
         p.setRefRequested.connect(self._on_set_ref)
         p.testOneRequested.connect(self._on_test_one)
@@ -208,23 +260,54 @@ class LamaController(QObject):
         p.nextRequested.connect(self._on_next)
         p.brushRadiusChanged.connect(self._on_brush_changed)
 
+    # ================================================================ 最近目录记忆（lama/last_image_dir）
+    def _read_last_image_dir(self) -> str:
+        """从 SettingsStore 读取上次 Open/TestOne 选择的图片目录。
+
+        仅当保存的路径仍然存在时返回它；未保存或目录已不存在返回 ""。
+        """
+        saved = self._settings_store.get("lama/last_image_dir", "")
+        if saved and isinstance(saved, str) and os.path.isdir(saved):
+            return saved
+        return ""
+
+    def _save_last_image_dir(self, image_path: str):
+        """把所选图片的父目录持久化到 SettingsStore（key: lama/last_image_dir）。
+
+        用户取消 QFileDialog 时不要调用本方法。必须 sync() 才落盘，
+        确保关闭程序重新启动后仍能读取。
+        """
+        parent = str(Path(image_path).resolve().parent)
+        try:
+            self._settings_store.set("lama/last_image_dir", parent)
+            self._settings_store.sync()
+        except Exception:
+            # 持久化失败不影响本次打开，下次回到默认行为即可
+            pass
+
     # ================================================================ Phase 1: Open / Prev / Next / ClearMask
     def _on_open(self):
         """打开单张图片：自动加载同目录所有图片并按名称排序。"""
         if self._busy:
             self._page.set_status_text("Busy，请等待 Q 完成")
             return
-        # 默认目录：优先当前打开过的目录
-        default_dir = ""
+        # 默认目录：若已打开图片序列，优先当前图片所在目录；
+        # 否则读取上次保存的 lama/last_image_dir（存在才用）。
         if self._current_index >= 0 and self._image_files:
             default_dir = str(Path(self._image_files[self._current_index]).parent)
+        else:
+            default_dir = self._read_last_image_dir()
 
         f, _ = QFileDialog.getOpenFileName(
             self._page, "Open Image", default_dir,
             "Images (*.png *.jpg *.jpeg *.bmp)"
         )
         if not f:
+            # 用户取消：不要修改 last_image_dir
             return
+
+        # 记住所选图片的父目录，下次启动直接从此目录打开
+        self._save_last_image_dir(f)
 
         # 收集同目录所有图片并按名称排序（与 C++ QDir::Name 一致）
         path = Path(f)
@@ -249,6 +332,11 @@ class LamaController(QObject):
 
         self._load_current_image()
         self._refresh_status()
+        self._log(
+            f"Open: {path.parent} | {len(self._image_files)} 张图片 | "
+            f"当前 {self._current_index + 1}/{len(self._image_files)} "
+            f"({Path(self._image_files[self._current_index]).name}) | rolling reference 已重置"
+        )
 
     def _on_clear_mask(self):
         """清空当前 mask。"""
@@ -305,80 +393,70 @@ class LamaController(QObject):
                 f"Image {self._current_index + 1}/{len(self._image_files)}"
             )
 
-    # ================================================================ Phase 5: LoadModel / Auto Load
-    def _try_auto_load_model(self):
-        """启动时自动尝试加载 LaMa 模型。
+    # ================================================================ 模型加载（GPU-only 固定路径，异步）
+    def _start_model_load(self):
+        """启动后台模型加载（GPU-only，固定模型路径，异步非阻塞 GUI）。
 
-        优先级（不崩溃，失败留 LoadModel 按钮给用户手动选择）：
-            1. QSettings:  lama/model_path
-            2. 环境变量:    YJJ_LAMA_MODEL
-            3. feature-local: <本文件所在目录>/models/lama_fp32.onnx
+        唯一模型路径：<本文件所在目录>/models/lama_fp32.onnx
+        （__file__ 即 lama_controller.py -> features/lama/models/lama_fp32.onnx）
+
+        不在源码写 Windows 绝对路径（固定为 features/lama/models/lama_fp32.onnx）。
         """
-        candidate = None
-
-        # ---- 1. QSettings ----
-        saved_path = self._settings_store.get("lama/model_path", None)
-        if saved_path and isinstance(saved_path, str) and os.path.isfile(saved_path):
-            candidate = saved_path
-
-        # ---- 2. 环境变量 ----
-        if candidate is None:
-            env_path = os.environ.get("YJJ_LAMA_MODEL", "")
-            if env_path and os.path.isfile(env_path):
-                candidate = env_path
-
-        # ---- 3. feature-local fallback ----
-        if candidate is None:
-            default_model = (
-                Path(__file__).resolve().parent
-                / "models"
-                / "lama_fp32.onnx"
-            )
-            if default_model.is_file():
-                candidate = str(default_model)
-
-        if candidate is None:
-            # 没有任何候选 → 静默跳过，保留 LoadModel 按钮
-            return
-
-        try:
-            ok = self._lama_inference_service.load_model(candidate)
-        except Exception:
-            ok = False
-
-        if ok:
-            self._page.set_status_text(
-                f"Model auto-loaded: {Path(candidate).name}"
-            )
-        # 失败：不崩溃也不打扰用户，LoadModel 按钮仍可用
-
-    def _on_load_model(self):
-        """加载 LaMa ONNX 模型（路径由用户选择，不写死）。
-
-        选择成功后把路径写入 QSettings（lama/model_path），下次启动自动加载。
-        """
-        if self._busy:
-            self._page.set_status_text("Busy，请等待 Q 完成")
-            return
-        f, _ = QFileDialog.getOpenFileName(
-            self._page, "Select LaMa ONNX Model", "",
-            "ONNX Models (*.onnx)"
+        model_path = str(
+            Path(__file__).resolve().parent / "models" / "lama_fp32.onnx"
         )
-        if not f:
-            return
-        self._page.set_status_text("Loading model...")
-        ok = self._lama_inference_service.load_model(f)
-        if ok:
-            self._page.set_status_text(f"Model loaded: {Path(f).name}")
-            # 持久化：下次启动自动加载同一个模型
-            try:
-                self._settings_store.set("lama/model_path", f)
-                self._settings_store.sync()
-            except Exception:
-                # QSettings 写入失败不影响模型实际已加载
-                pass
+        self._model_load_failed = False
+        self._log("正在后台加载模型...")
+        self._model_load_worker = _ModelLoadWorker(
+            self._lama_inference_service, model_path, parent=None
+        )
+        self._model_load_worker.finished_with_result.connect(self._on_model_loaded)
+        self._model_load_worker.start()
+
+    def _on_model_loaded(self, success: bool, model_path: str, error: str):
+        """模型后台加载完成回调（主线程，由 worker 信号触发）。
+
+        无论成功失败都清理 worker，并在 GUI 日志显示真实结果。
+        """
+        worker = self._model_load_worker
+        self._model_load_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if success:
+            self._model_load_failed = False
+            self._page.set_status_text(f"Model loaded: {Path(model_path).name}")
+            self._log(f"模型加载成功: {Path(model_path).name}")
+            self._log_ort_providers()
         else:
-            self._page.set_status_text("Failed to load model (onnxruntime 未安装或模型无效)")
+            self._model_load_failed = True
+            self._page.set_status_text("LaMa CUDA 模型加载失败，请查看运行日志。")
+            self._log(f"模型加载失败: {error if error else '(未知错误)'}")
+            self._log_ort_providers()
+
+    def _check_lama_model(self) -> tuple:
+        """检查 LaMa 模型当前状态，供 Q / TestOne 在真正需要推理前调用。
+
+        返回 (state, message):
+            ("ready",   "")           模型已加载，可推理
+            ("loading", "...")        后台仍在加载，需等待
+            ("failed",  "...")        加载失败（CUDA/DLL/模型错误）
+        """
+        if self._lama_inference_service.is_loaded():
+            return ("ready", "")
+        if self._model_load_worker is not None:
+            return ("loading", "LaMa 模型正在后台加载，请稍候。")
+        if self._model_load_failed:
+            return ("failed", "LaMa CUDA 模型加载失败，请查看运行日志。")
+        # 理论不应发生（启动时即进入 loading）：兜底视为加载中
+        return ("loading", "LaMa 模型正在后台加载，请稍候。")
+
+    def _log_ort_providers(self):
+        """记录 ORT available / active providers（只读诊断信息）。"""
+        available = self._lama_inference_service.available_providers()
+        active = self._lama_inference_service.active_providers()
+        self._log(f"ORT available providers: {available if available else '(none)'}")
+        self._log(f"ORT active providers: {active if active else '(none)'}")
 
     # ================================================================ Phase 4: SetRef / A / TestOne
     def _on_set_ref(self):
@@ -415,6 +493,10 @@ class LamaController(QObject):
             self._page.set_status_text(
                 f"Expected {_EXPECTED_COMPONENT_COUNT} masks, got {len(centers)}"
             )
+            self._log(
+                f"SetRef 失败：期望 {_EXPECTED_COMPONENT_COUNT} 个 mask component，"
+                f"实际 {len(centers)} 个"
+            )
             return
 
         # ---- 按 (y, x) 升序建立 canonical ID 0..6（stable ID 关键）----
@@ -426,12 +508,19 @@ class LamaController(QObject):
         )
         if not ok:
             self._page.set_status_text("Reference set FAILED")
+            self._log("SetRef 失败：ReferenceAlignmentService.set_reference 返回 False")
             return
 
         self._reference_index = self._current_index
         self._current_prediction = None     # 清空旧 prediction
         self._refresh_status()
         self._page.set_status_text("Reference set OK")
+        cur_name = (Path(self._image_files[self._current_index]).name
+                    if 0 <= self._current_index < len(self._image_files) else "-")
+        self._log(
+            f"SetRef 成功：index={self._current_index} ({cur_name})，"
+            f"canonical points={len(centers)}"
+        )
 
     def _on_assist_mask(self):
         """A 键：基于基准预测 mask 草稿（mode="assist"）。
@@ -468,11 +557,13 @@ class LamaController(QObject):
             self._page.set_status_text(
                 f"AssistMask: predicted 0/{result.total}, please draw manually"
             )
+            self._log(f"Assist: 0/{result.total}（无可用 mask，需人工绘制）")
             return
 
         mask_qimg = self._np_mask_to_qimage(result.mask)
         canvas.set_mask(mask_qimg)
         self._page.set_prediction_info(result.success, result.total)
+        self._log(f"Assist: {result.success}/{result.total}")
         if result.success < result.total:
             self._page.set_status_text(
                 f"AssistMask: predicted {result.success}/{result.total}, please fix manually"
@@ -510,17 +601,23 @@ class LamaController(QObject):
             self._page.set_status_text("TestOne worker still running, please wait")
             return
 
-        # ---- 选择测试图片 ----
+        # ---- 选择测试图片（起始目录同样使用 lama/last_image_dir，避免每次从工作目录开始）----
         f, _ = QFileDialog.getOpenFileName(
-            self._page, "Select one image (B)", "",
+            self._page, "Select one image (B)", self._read_last_image_dir(),
             "Images (*.png *.jpg *.jpeg *.bmp)"
         )
         if not f:
+            # 用户取消：不要修改 last_image_dir
             return
+        # 记住所选图片的父目录，Open 与 TestOne 共用同一个记忆
+        self._save_last_image_dir(f)
         img_b = QImage(f)
         if img_b.isNull():
             self._page.set_status_text("Failed to load image")
+            self._log(f"TestOne 失败：图片无法加载 {f}")
             return
+
+        self._log(f"TestOne 开始: {f}")
 
         # ---- P1-1: 调用统一 predict API，mode 与 A 一致 ----
         target_rgb = self._qimage_to_rgb_np(img_b)
@@ -536,17 +633,21 @@ class LamaController(QObject):
             self._page.set_status_text(
                 f"Local match failed: {result.success}/{result.total} | {head}"
             )
+            self._log(f"TestOne 失败: {result.success}/{result.total} | {head}")
             return
 
         self._page.set_status_text(
             f"Local match OK: {result.success}/{result.total}"
         )
+        self._log(f"TestOne 匹配成功: {result.success}/{result.total}")
 
         # ---- 预先生成 base preview（mask overlay + track 调试框）----
         base_qimg = self._build_test_one_preview(img_b, result)
 
-        # ---- 若 LaMa 模型已加载：后台 worker 推理，避免阻塞 GUI（P1-2）----
-        if self._lama_inference_service.is_loaded():
+        # ---- 仅当模型真正就绪时后台推理，避免阻塞 GUI（P1-2）----
+        # 模型仍在加载 / 加载失败：只显示 tracking + mask preview，不跑 LaMa 擦除预览
+        model_state, model_msg = self._check_lama_model()
+        if model_state == "ready":
             self._page.set_status_text("TestOne: 推理中（后台）...")
             self._test_one_pending = (base_qimg, result)
             self._test_one_worker = _InpaintWorker(
@@ -558,7 +659,14 @@ class LamaController(QObject):
             self._test_one_worker.start()
             return
 
-        # ---- 模型未加载：直接显示 base preview ----
+        if model_state == "loading":
+            self._log(f"TestOne: {model_msg}")
+        else:
+            self._log(
+                "TestOne: LaMa CUDA 模型加载失败，跳过擦除预览。详情："
+                + self._lama_inference_service.last_error()
+            )
+        # ---- 模型未就绪：直接显示 base preview ----
         self._show_test_one_preview_dialog(base_qimg, result, None)
 
     def _on_test_one_inpaint_done(self, result_arr: np.ndarray):
@@ -586,10 +694,12 @@ class LamaController(QObject):
             self._page.set_status_text(
                 f"Local match OK: {result.success}/{result.total} | Inpaint done"
             )
+            self._log(f"TestOne 推理完成: {result.success}/{result.total}")
         else:
             self._page.set_status_text(
                 f"Local match OK: {result.success}/{result.total} | Inpaint failed"
             )
+            self._log("TestOne 推理失败（inpaint 返回空结果）")
 
         self._show_test_one_preview_dialog(base_qimg, result, inpainted)
 
@@ -676,14 +786,17 @@ class LamaController(QObject):
             return
         if self._current_index < 0 or self._current_index >= len(self._image_files):
             self._page.set_status_text("当前没有打开的文件路径，请先 Open")
+            self._log("Q BLOCK: 当前没有打开的文件路径，请先 Open")
             return
         mask = canvas.mask_image()
         if mask.isNull():
             self._page.set_status_text("Mask is empty, please draw 7 masks first")
+            self._log("Q BLOCK: mask 为空")
             return
 
         # ---- 2. 快照（与 C++ 一样，异步 callback 里绝不能再读 canvas/current_index）----
         current_path = self._image_files[self._current_index]
+        self._log(f"Q start: index={self._current_index} | {current_path}")
         original_rgb = self._qimage_to_rgb_np(src).copy()
         final_mask = self._mask_qimage_to_np(mask).copy()
         image_size = (src.width(), src.height())
@@ -711,6 +824,10 @@ class LamaController(QObject):
                 self._page.set_status_text(
                     f"Q BLOCK: Reference canonical points 不足 {_EXPECTED_COMPONENT_COUNT} 个"
                 )
+                self._log(
+                    f"Q BLOCK: Reference canonical points={len(ref_points)}，"
+                    f"需 {_EXPECTED_COMPONENT_COUNT} 个"
+                )
                 return
             predicted_centers = {
                 i: ref_points[i] for i in range(_EXPECTED_COMPONENT_COUNT)
@@ -722,6 +839,10 @@ class LamaController(QObject):
                 self._page.set_status_text(
                     "当前图片尚未执行 Assist Mask，请先按 A。"
                 )
+                self._log(
+                    f"Q BLOCK: 有效预测 {len(predicted_centers)}/"
+                    f"{_EXPECTED_COMPONENT_COUNT}，请先按 A"
+                )
                 return
 
         # ---- 4. MaskLabelService 分析 final_mask（component 数 != 7 或 assignment 失败 -> BLOCK）----
@@ -732,6 +853,7 @@ class LamaController(QObject):
             self._page.set_status_text(
                 "Q BLOCK: mask label validation FAILED (7 components / stable ID / distance)"
             )
+            self._log("Q BLOCK: mask label 校验失败（7 component / stable ID / 距离）")
             return
 
         # ---- 5. P0-3: 预验证 Reference State（不修改当前状态）----
@@ -745,6 +867,7 @@ class LamaController(QObject):
             self._page.set_status_text(
                 "Q BLOCK: rolling reference 预验证失败（component 数 != 7 或一对一匹配失败）"
             )
+            self._log("Q BLOCK: rolling reference 预验证失败（component != 7 或匹配失败）")
             return
 
         # ---- 6. 生成输出路径（与 C++ 一致：sourceDir/out/ + sourceDir/labels/）----
@@ -757,9 +880,18 @@ class LamaController(QObject):
         output_path = str(out_dir / path_obj.name)
         label_path = str(labels_dir / (path_obj.stem + ".txt"))
 
-        # ---- 7. 检查模型已加载 ----
-        if not self._lama_inference_service.is_loaded():
-            self._page.set_status_text("LaMa model not loaded. Click LoadModel first")
+        # ---- 7. 检查模型状态（GPU-only 异步加载）----
+        model_state, model_msg = self._check_lama_model()
+        if model_state == "loading":
+            self._page.set_status_text(model_msg)
+            self._log("Q BLOCK: " + model_msg)
+            return
+        if model_state == "failed":
+            self._page.set_status_text(model_msg)
+            self._log(
+                "Q BLOCK: " + model_msg
+                + " 详情：" + self._lama_inference_service.last_error()
+            )
             return
 
         # ---- 保存快照（供 callback 使用，含预验证过的 prepared_ref）----
@@ -815,6 +947,7 @@ class LamaController(QObject):
             self._page.set_busy(False)
             self._commit_snapshot = None
             self._page.set_status_text(msg)
+            self._log(f"Q fail: {msg}")
 
         # ---- 1. 推理失败 ----
         if result is None or result.size == 0 or snap is None:
@@ -920,6 +1053,10 @@ class LamaController(QObject):
         self._commit_snapshot = None
         self._refresh_status()
         self._page.set_status_text("Q: Commit success!")
+        self._log(f"output image path: {snap.output_path}")
+        self._log(f"label path: {snap.label_path}")
+        self._log(f"rolling ref updated -> index={snap.current_index} | {snap.current_path}")
+        self._log("Q success")
 
         # ---- 6. show_next_image()（Q 成功以前绝不切下一张）----
         self._on_next()

@@ -61,14 +61,47 @@ class LamaInferenceService:
         self._session = None
         self._input_names = None
         self._output_names = None
+        self._last_error = ""
 
     # ============================================================ 公开 API
     def is_loaded(self) -> bool:
         """模型是否已加载。"""
         return self._session is not None
 
+    def last_error(self) -> str:
+        """最近一次 load_model / run 失败的真实错误（供 GUI shared log 显示）。
+
+        成功时为空字符串。
+        """
+        return self._last_error
+
+    @staticmethod
+    def available_providers() -> list:
+        """onnxruntime 可用 ExecutionProvider 列表（只读诊断，供 GUI 日志）。
+
+        onnxruntime 未安装或查询失败时返回空列表。不影响推理流程。
+        """
+        if not _HAS_ORT:
+            return []
+        try:
+            return list(ort.get_available_providers())
+        except Exception:
+            return []
+
+    def active_providers(self) -> list:
+        """当前 session 实际启用的 ExecutionProvider 列表（只读诊断，供 GUI 日志）。
+
+        模型未加载时返回空列表。不影响推理流程。
+        """
+        if self._session is None:
+            return []
+        try:
+            return list(self._session.get_providers())
+        except Exception:
+            return []
+
     def load_model(self, model_path: str) -> bool:
-        """加载 ONNX 模型。
+        """加载 ONNX 模型（CUDA 优先，CPU 仅作为必要节点 fallback）。
 
         与 C++ LamaOrt 构造函数一致：
         - IntraOpNumThreads = 1
@@ -76,32 +109,51 @@ class LamaInferenceService:
         - 输入名: image, mask
         - 输出名: output
 
-        返回：True 成功 / False 失败（onnxruntime 未安装或模型加载失败）
+        GPU 执行提供方（EP）约束：
+        - 必须检测到 CUDAExecutionProvider，否则直接返回 False（模型加载失败，不静默退回纯 CPU）
+        - Session providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        - CUDA 优先执行，CPUExecutionProvider 仅作为 ORT 必要节点 fallback
+        - 不启用 TensorRT
+
+        返回：True 成功 / False 失败（onnxruntime 未安装 / 无 CUDA / 模型无效 / CUDA 初始化失败）
+        失败时可通过 last_error() 获取真实错误。
         """
+        self._last_error = ""
         if not _HAS_ORT:
+            self._last_error = "onnxruntime 未安装（import onnxruntime 失败）"
             return False
         try:
+            try:
+                ort.preload_dlls()
+            except Exception:
+                pass
+
             so = ort.SessionOptions()
             so.intra_op_num_threads = 1
             so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
             available = ort.get_available_providers()
 
-            providers = []
-            if "CUDAExecutionProvider" in available:
-                providers.append("CUDAExecutionProvider")
-            providers.append("CPUExecutionProvider")
+            if "CUDAExecutionProvider" not in available:
+                self._last_error = "CUDAExecutionProvider 不可用"
+                return False
 
             self._session = ort.InferenceSession(
                 model_path,
                 so,
-                providers=providers
+                providers=[
+                    "CUDAExecutionProvider",
+                    "CPUExecutionProvider",
+                ]
             )
 
-            # 与 C++ 一致：输入 image/mask，输出 output
             self._input_names = [i.name for i in self._session.get_inputs()]
             self._output_names = [o.name for o in self._session.get_outputs()]
+            self._last_error = ""
             return True
-        except Exception:
+
+        except Exception as e:
+            self._last_error = str(e)
             self._session = None
             self._input_names = None
             self._output_names = None
@@ -165,7 +217,9 @@ class LamaInferenceService:
         }
         try:
             outputs = self._session.run(self._output_names, feed)
-        except Exception:
+        except Exception as e:
+            # 记录真实错误，避免被静默吞掉（GUI shared log 可读取）
+            self._last_error = str(e)
             return np.zeros((0, 0, 3), dtype=np.uint8)
 
         out = outputs[0]          # (1,3,H,W) float32

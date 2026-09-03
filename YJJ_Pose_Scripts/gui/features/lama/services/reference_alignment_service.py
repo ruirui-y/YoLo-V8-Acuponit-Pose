@@ -12,7 +12,7 @@
   后续 rolling reference 调用 set_reference 时通过一对一匹配继承 canonical ID，
   绝不重新按 (y,x) 重排。
 - predict() 输出的 TrackPrediction.id 始终是 canonical ID（不被 rolling reference 改变）。
-- A 键允许部分 Track 成功，画固定半径圆；TestOne 严格，任一失败整张失败
+- A 键允许部分 Track 成功，并平移参考 mask patch；TestOne 严格，任一失败整张失败
 - 不依赖 QWidget / PySide6，纯 numpy + cv2 算法，方便自动测试
 
 参考 C++ AlignToReference:
@@ -286,7 +286,7 @@ class ReferenceAlignmentService:
           + 合成实际 mask 补丁（PasteMaskPatch）+ dilate
           对应 C++ MakeMaskFor（TestOne / Batch 使用）
         - mode="assist"：RunTwoStageMatch + 宽松（允许部分成功）
-          + 以预测中心为圆心画固定半径圆
+            + 将成功 Track 的参考 mask patch 平移到预测位置
           对应 C++ MakeAssistMaskFor（A 键使用）
 
         返回 PredictionResult：
@@ -326,19 +326,15 @@ class ReferenceAlignmentService:
                                     success=success, total=n,
                                     global_dx=gdx, global_dy=gdy)
 
-        # ---- assist 模式：画固定半径圆 ----
+        # ---- assist 模式：继承参考图实际 mask 形状 ----
         if success == 0:
             return PredictionResult(mask=None, tracks=tracks,
                                     success=0, total=n,
                                     global_dx=gdx, global_dy=gdy)
-        final = np.zeros((h, w), dtype=np.uint8)
-        for t in tracks:
-            if not t.ok:
-                continue
-            track = self._local_tracks[t.id]
-            cx = int(round(track.ref_center[0] + t.dx))
-            cy = int(round(track.ref_center[1] + t.dy))
-            cv2.circle(final, (cx, cy), self.assist_mask_radius, 255, -1)
+
+        use = [t.ok for t in tracks]
+        final = self._compose_final_mask(tracks, use, h, w)
+
         return PredictionResult(mask=final, tracks=tracks,
                                 success=success, total=n,
                                 global_dx=gdx, global_dy=gdy)

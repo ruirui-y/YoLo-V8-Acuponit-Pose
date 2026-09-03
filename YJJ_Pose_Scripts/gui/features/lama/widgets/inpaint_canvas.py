@@ -102,7 +102,7 @@ class InpaintCanvas(QGraphicsView):
         # ---- 内部状态 ----
         self._src = QImage()                            # RGB888
         self._mask = QImage()                           # Grayscale8 (0=keep, 255=hole)
-        self._brush_radius = 13
+        self._brush_radius = 9
         self._drawing = False
         self._last_paint_pos = QPointF()
         self._zoom = 1.0
