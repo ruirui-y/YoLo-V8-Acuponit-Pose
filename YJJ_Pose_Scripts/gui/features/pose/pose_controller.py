@@ -27,11 +27,16 @@ from .services.result_parser import ResultParser
 class PoseController:
     """Pose 工作区协调器：连接 Panel 信号 → 调用 Service / ProcessRunner。"""
 
-    def __init__(self, dataset_panel, train_panel, eval_panel, status_log_panel):
+    def __init__(self, dataset_panel, train_panel, eval_panel, status_log_panel,
+                 log_sink=None):
         self.dataset_panel = dataset_panel
         self.train_panel = train_panel
         self.eval_panel = eval_panel
         self.status_log_panel = status_log_panel
+
+        # ---- 应用级共享日志 sink（SharedLogPanel.append_log）----
+        # 日志统一写到 MainWindow 右侧唯一日志面板；status 仍走 Pose status panel。
+        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
 
         # ---- 基础设施 ----
         self._runner = ProcessRunner()
@@ -291,7 +296,8 @@ class PoseController:
         self.status_log_panel.set_status(text)
 
     def _log(self, text):
-        self.status_log_panel.append_log(text)
+        """写应用级共享日志（带 [Pose] 前缀），不再写 Panel 内部控件。"""
+        self._log_sink(f"[Pose] {text}")
 
     # ================================================================ 控件启停
     def _disable_all(self, disable):

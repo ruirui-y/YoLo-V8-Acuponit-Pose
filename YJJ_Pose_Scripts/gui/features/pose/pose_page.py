@@ -1,16 +1,14 @@
 """RGBD Pose 实验工作区页面（Feature Page）。
 
-负责组装现有 DatasetPanel / TrainPanel / EvalPanel / StatusLogPanel，
-以及当前左右 QSplitter 布局：
-- 左侧（可滚动）：Dataset / Train / Eval / Status
-- 右侧：运行日志
+负责组装现有 DatasetPanel / TrainPanel / EvalPanel / StatusLogPanel：
+- 单列可滚动工作区：Dataset / Train / Eval / Pose 状态区
 
-从 MainWindow._build_ui() 迁移的布局逻辑，MainWindow 不再直接知道这些 Panel。
+运行日志已上移为应用级组件（widgets/shared_log_panel.SharedLogPanel），
+由 MainWindow 创建并放在顶层 Horizontal QSplitter 右侧，
+本页不再创建 QSplitter，也不再管理日志控件 / 收起-展开逻辑；
+只通过构造注入的 log_sink 写日志。
 """
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QScrollArea, QSplitter, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from .panels.dataset_panel import DatasetPanel
 from .panels.eval_panel import EvalPanel
@@ -20,10 +18,13 @@ from .pose_controller import PoseController
 
 
 class PosePage(QWidget):
-    """RGBD Pose 实验工作区：组装 Panel + 创建 Controller + 左右 Splitter 布局。"""
+    """RGBD Pose 实验工作区：组装 Panel + 创建 Controller（单列布局）。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, log_sink=None):
         super().__init__(parent)
+
+        # ---- 应用级共享日志 sink（MainWindow 注入 SharedLogPanel.append_log）----
+        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
 
         # ---- 创建各 Panel（Panel 构造不连接 Controller，只创建控件）----
         self.dataset_panel = DatasetPanel()
@@ -35,6 +36,7 @@ class PosePage(QWidget):
         self.controller = PoseController(
             self.dataset_panel, self.train_panel,
             self.eval_panel, self.status_log_panel,
+            log_sink=self._log_sink,
         )
 
         self._build_ui()
@@ -43,11 +45,7 @@ class PosePage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # 左右结构：左侧可滚动（Dataset/Train/Eval/状态），右侧运行日志
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        root.addWidget(splitter)
-
-        # ---- 左侧：可滚动区 ----
+        # ---- 单列可滚动工作区：Dataset / Train / Eval / Pose 状态 ----
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
@@ -57,42 +55,7 @@ class PosePage(QWidget):
         v.addWidget(self.train_panel)
         v.addWidget(self.eval_panel)
         v.addWidget(self.status_log_panel.status_widget)
-        splitter.addWidget(scroll)
-
-        # ---- 右侧：运行日志 ----
-        splitter.addWidget(self.status_log_panel.log_widget)
-
-        # 默认比例 65% / 35%；右侧日志最小宽度约 350px
-        splitter.setStretchFactor(0, 65)
-        splitter.setStretchFactor(1, 35)
-        self.status_log_panel.log_widget.setMinimumWidth(350)
-        self._splitter = splitter
-        self._log_collapsed = False
-        self._log_prev_sizes = None
-
-        # 收起 / 展开日志：由 Page 处理（Splitter 布局是 Page 的职责）
-        self.status_log_panel.toggleLogRequested.connect(self._on_toggle_log)
-
-    def _on_toggle_log(self):
-        """收起 / 展开右侧运行日志：用 QSplitter.setSizes 控制右侧宽度。"""
-        sp = self._splitter
-        if not self._log_collapsed:
-            # 收起：记住收起前宽度，临时取消右侧最小宽度限制，右侧设 0
-            self._log_prev_sizes = sp.sizes()
-            self.status_log_panel.set_log_min_width(0)
-            sp.setSizes([sum(self._log_prev_sizes), 0])
-            self._log_collapsed = True
-            self.status_log_panel.set_toggle_log_text("展开日志")
-        else:
-            # 展开：恢复收起前右侧宽度，恢复右侧最小宽度
-            if self._log_prev_sizes and len(self._log_prev_sizes) == 2:
-                sp.setSizes(self._log_prev_sizes)
-            else:
-                total = sum(sp.sizes()) or 1000
-                sp.setSizes([int(total * 0.65), int(total * 0.35)])
-            self.status_log_panel.set_log_min_width(350)
-            self._log_collapsed = False
-            self.status_log_panel.set_toggle_log_text("收起日志")
+        root.addWidget(scroll)
 
     def save_settings(self):
         """供 MainWindow closeEvent 调用，持久化 Pose 配置。"""
