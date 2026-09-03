@@ -21,7 +21,10 @@ MainWindow 只负责：
 所有业务逻辑（rgb_yaml / rgbd_yaml / dataset / train / eval / ablate / QProcess /
 QSettings / stdout 解析 / LaMa 工作流）均在 features/ 和 core/。
 """
+from __future__ import annotations
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout, QMainWindow, QPushButton, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -39,7 +42,7 @@ _SPLIT_LEFT_RATIO = 0.65
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("YJJ RGBD Pose 训练 GUI")
         self.resize(1400, 820)
@@ -92,14 +95,14 @@ class MainWindow(QMainWindow):
         self._show_pose()
 
     # ================================================================ 页面切换
-    def _show_pose(self):
+    def _show_pose(self) -> None:
         """只切换左侧 stack，右侧 SharedLogPanel 保持不变。"""
         self.stack.setCurrentWidget(self.pose_page)
 
-    def _show_lama(self):
+    def _show_lama(self) -> None:
         """只切换左侧 stack，右侧 SharedLogPanel 保持不变。"""
         self.stack.setCurrentWidget(self.lama_page)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.pose_page.save_settings()
         super().closeEvent(event)

@@ -23,6 +23,10 @@
 - processCore / RunOrt / ImageToFloatCHW_HoleZero01 / MaskToFloatHW
 - BinarizeInPlace / DilateGray8 / OutputIs01 / CompositeByMask
 """
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
 
 try:
@@ -57,11 +61,11 @@ class LamaInferenceService:
         result = svc.run(rgb_image, binary_mask)
     """
 
-    def __init__(self):
-        self._session = None
-        self._input_names = None
-        self._output_names = None
-        self._last_error = ""
+    def __init__(self) -> None:
+        self._session: Any | None = None
+        self._input_names: list[str] | None = None
+        self._output_names: list[str] | None = None
+        self._last_error: str = ""
 
     # ============================================================ 公开 API
     def is_loaded(self) -> bool:
@@ -76,7 +80,7 @@ class LamaInferenceService:
         return self._last_error
 
     @staticmethod
-    def available_providers() -> list:
+    def available_providers() -> list[str]:
         """onnxruntime 可用 ExecutionProvider 列表（只读诊断，供 GUI 日志）。
 
         onnxruntime 未安装或查询失败时返回空列表。不影响推理流程。
@@ -88,7 +92,7 @@ class LamaInferenceService:
         except Exception:
             return []
 
-    def active_providers(self) -> list:
+    def active_providers(self) -> list[str]:
         """当前 session 实际启用的 ExecutionProvider 列表（只读诊断，供 GUI 日志）。
 
         模型未加载时返回空列表。不影响推理流程。

@@ -12,6 +12,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_lama_phase4_predict.py
 """
+from __future__ import annotations
+
 import sys
 import traceback
 from pathlib import Path
@@ -32,7 +34,7 @@ from features.lama.services import (    # noqa: E402
 from features.lama.lama_controller import LamaController    # noqa: E402
 
 
-def _check(name, cond, failures, detail=""):
+def _check(name: str, cond: bool, failures: list[str], detail: str = "") -> None:
     if cond:
         print(f"  [OK]   {name}")
     else:
@@ -41,7 +43,7 @@ def _check(name, cond, failures, detail=""):
             failures.append(name)
 
 
-def _make_test_image_and_mask(size=(640, 480), centers=None, patch_size=30, shift=(0, 0)):
+def _make_test_image_and_mask(size: tuple[int, int] = (640, 480), centers: list[tuple[int, int]] | None = None, patch_size: int = 30, shift: tuple[int, int] = (0, 0)) -> tuple[np.ndarray, np.ndarray]:
     """生成测试图 + mask：在指定 center 周围放置随机噪声 patch。"""
     w, h = size
     img = np.full((h, w, 3), 30, dtype=np.uint8)
@@ -62,7 +64,7 @@ def _make_test_image_and_mask(size=(640, 480), centers=None, patch_size=30, shif
     return img, mask
 
 
-def _np_to_qimage_rgb(np_rgb):
+def _np_to_qimage_rgb(np_rgb: np.ndarray) -> QImage:
     """numpy HxWx3 RGB -> QImage RGB888（测试辅助）。"""
     h, w = np_rgb.shape[:2]
     np_rgb = np.ascontiguousarray(np_rgb)
@@ -70,7 +72,7 @@ def _np_to_qimage_rgb(np_rgb):
     return img.copy()
 
 
-def _np_to_qimage_gray(np_gray):
+def _np_to_qimage_gray(np_gray: np.ndarray) -> QImage:
     """numpy HxW uint8 -> QImage Grayscale8（测试辅助）。"""
     h, w = np_gray.shape[:2]
     np_gray = np.ascontiguousarray(np_gray)
@@ -78,7 +80,7 @@ def _np_to_qimage_gray(np_gray):
     return img.copy()
 
 
-def main():
+def main() -> None:
     failures = []
 
     # 7 个固定 center（按 (y, x) 升序排好的）
@@ -158,7 +160,7 @@ def main():
 
     # Controller._get_predicted_centers 是实例方法，但只读 self._current_prediction
     # 这里直接复刻其逻辑做测试
-    def get_predicted_centers(prediction):
+    def get_predicted_centers(prediction: "PredictionResult | None") -> dict[int, tuple[float, float]]:
         if prediction is None:
             return {}
         centers = {}

@@ -18,6 +18,10 @@
 参考 C++ LamaErasure/MainWindow.cpp::buildUi() 的工具栏布局，
 但裁剪掉 Batch / AutoMask / TrackROI / SaveAs 等历史功能。
 """
+from __future__ import annotations
+
+from typing import Callable, TYPE_CHECKING
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QToolBar,
@@ -25,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .widgets.inpaint_canvas import InpaintCanvas
+from .lama_controller import LamaController
 
 
 class LamaPage(QWidget):
@@ -42,18 +47,20 @@ class LamaPage(QWidget):
     nextRequested = Signal()
     brushRadiusChanged = Signal(int)       # 画笔半径
 
-    def __init__(self, parent=None, log_sink=None):
+    def __init__(self, parent: QWidget | None = None, log_sink: Callable[[str], None] | None = None) -> None:
         super().__init__(parent)
         # ---- 应用级共享日志 sink（MainWindow 注入 SharedLogPanel.append_log）----
-        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
+        self._log_sink: Callable[[str], None] = (
+            log_sink if callable(log_sink) else (lambda _text: None)
+        )
+        self.controller: LamaController
         self._build_ui()
         # ---- 创建 Controller（连接本页 signals + 初始化）----
         # 延迟 import 避免 widgets 模块在 LamaPage import 阶段被循环依赖
-        from .lama_controller import LamaController
         self.controller = LamaController(self, log_sink=self._log_sink)
 
     # ================================================================ UI 构建
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -126,11 +133,11 @@ class LamaPage(QWidget):
         self._toolbar.addWidget(btn)
 
     # ================================================================ 对外接口（Controller 调用）
-    def set_status_text(self, text: str):
+    def set_status_text(self, text: str) -> None:
         """显示状态栏文本（临时消息）。"""
         self._status_label.setText(text)
 
-    def set_current_info(self, current_idx: int, total: int, filename: str):
+    def set_current_info(self, current_idx: int, total: int, filename: str) -> None:
         """显示 Current: x/total | filename。current_idx 为 -1 表示无图。"""
         if total <= 0 or current_idx < 0:
             cur_text = "Current: -/-"
@@ -140,7 +147,7 @@ class LamaPage(QWidget):
             name_text = filename
         self._update_permanent_label(current=cur_text, name=name_text)
 
-    def set_reference_info(self, ref_idx, ref_filename: str):
+    def set_reference_info(self, ref_idx: int | None, ref_filename: str) -> None:
         """显示 Reference 信息。ref_idx 为 None 表示未设基准。"""
         if ref_idx is None:
             ref_text = "Ref: none"
@@ -148,15 +155,15 @@ class LamaPage(QWidget):
             ref_text = f"Ref: {ref_idx + 1}"
         self._update_permanent_label(reference=ref_text)
 
-    def set_reference_ready(self, ready: bool):
+    def set_reference_ready(self, ready: bool) -> None:
         text = "Reference Ready" if ready else "Reference Not Ready"
         self._update_permanent_label(reference_state=text)
 
-    def set_prediction_info(self, success: int, total: int):
+    def set_prediction_info(self, success: int, total: int) -> None:
         """显示 Prediction: x/7。"""
         self._update_permanent_label(prediction=f"Prediction: {success}/{total}")
 
-    def set_busy(self, busy: bool):
+    def set_busy(self, busy: bool) -> None:
         """busy 时禁用 Q / A / Prev / Next / Open / SetRef / TestOne。"""
         for btn in self.findChildren(QPushButton):
             btn.setEnabled(not busy)
@@ -165,23 +172,23 @@ class LamaPage(QWidget):
         self.canvas.setEnabled(not busy)
 
     # ---- busy 状态下仍允许显示瞬时状态 ----
-    def set_busy_text(self, text: str):
+    def set_busy_text(self, text: str) -> None:
         self._status_label.setText(text)
 
     # ================================================================ 内部
     def _update_permanent_label(self,
-                               current: str = None,
-                               name: str = None,
-                               reference: str = None,
-                               reference_state: str = None,
-                               prediction: str = None,
-                               busy_state: str = None):
+                               current: str | None = None,
+                               name: str | None = None,
+                               reference: str | None = None,
+                               reference_state: str | None = None,
+                               prediction: str | None = None,
+                               busy_state: str | None = None) -> None:
         """合并显示一行永久状态信息。
 
         格式：Current: x/total | Ref: idx | filename | Reference Ready | Prediction: x/7 | Ready
         """
         if not hasattr(self, "_perm_state"):
-            self._perm_state = {
+            self._perm_state: dict[str, str] = {
                 "current": "Current: -/-",
                 "reference": "Ref: none",
                 "name": "-",

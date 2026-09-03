@@ -8,6 +8,10 @@
 本页不再创建 QSplitter，也不再管理日志控件 / 收起-展开逻辑；
 只通过构造注入的 log_sink 写日志。
 """
+from __future__ import annotations
+
+from typing import Callable
+
 from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from .panels.dataset_panel import DatasetPanel
@@ -20,7 +24,11 @@ from .pose_controller import PoseController
 class PosePage(QWidget):
     """RGBD Pose 实验工作区：组装 Panel + 创建 Controller（单列布局）。"""
 
-    def __init__(self, parent=None, log_sink=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        log_sink: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__(parent)
 
         # ---- 应用级共享日志 sink（MainWindow 注入 SharedLogPanel.append_log）----
@@ -41,7 +49,7 @@ class PosePage(QWidget):
 
         self._build_ui()
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
@@ -57,6 +65,6 @@ class PosePage(QWidget):
         v.addWidget(self.status_log_panel.status_widget)
         root.addWidget(scroll)
 
-    def save_settings(self):
+    def save_settings(self) -> None:
         """供 MainWindow closeEvent 调用，持久化 Pose 配置。"""
         self.controller.save_settings()

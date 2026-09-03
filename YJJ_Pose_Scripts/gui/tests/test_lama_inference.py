@@ -11,6 +11,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_lama_inference.py
 """
+from __future__ import annotations
+
 import sys
 import traceback
 from pathlib import Path
@@ -30,7 +32,7 @@ from features.lama.services.lama_inference_service import (   # noqa: E402
 )
 
 
-def _check(name, cond, failures, detail=""):
+def _check(name: str, cond: bool, failures: list[str], detail: str = "") -> None:
     if cond:
         print(f"  [OK]   {name}")
     else:
@@ -42,30 +44,30 @@ def _check(name, cond, failures, detail=""):
 class _MockSession:
     """模拟 onnxruntime.InferenceSession，输出 = 输入 image（恒等映射）。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._input_names = ["image", "mask"]
         self._output_names = ["output"]
 
-    def get_inputs(self):
+    def get_inputs(self) -> list["_MockSession._IO"]:
         class _IO:
-            def __init__(self, name):
+            def __init__(self, name: str) -> None:
                 self.name = name
         return [_IO(n) for n in self._input_names]
 
-    def get_outputs(self):
+    def get_outputs(self) -> list["_MockSession._IO"]:
         class _IO:
-            def __init__(self, name):
+            def __init__(self, name: str) -> None:
                 self.name = name
         return [_IO(n) for n in self._output_names]
 
-    def run(self, output_names, feed):
+    def run(self, output_names: list[str] | None, feed: dict[str, np.ndarray]) -> list[np.ndarray]:
         """输出 = 输入 image（恒等映射），形状 (1,3,H,W)。"""
         img = feed["image"]      # (1,3,H,W) float32 0..1
         # 直接返回 image 作为 output（模拟模型输出 0..1）
         return [img.copy()]
 
 
-def main():
+def main() -> None:
     failures = []
 
     # ================================================================ 1. 服务创建 + 无模型

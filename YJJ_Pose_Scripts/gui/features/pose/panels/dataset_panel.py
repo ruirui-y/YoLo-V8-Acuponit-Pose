@@ -13,6 +13,11 @@ browse 起始目录优先级由 Panel 内部 + 注入的 start_dir_provider 共�
     当前输入框 → provider（Controller 用它读 QSettings 上次路径）→ _REPO_ROOT
 provider 可在 Controller 构造完成后通过 set_start_dir_provider 注入，避免 Panel→Controller 反向依赖。
 """
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
@@ -30,17 +35,21 @@ class DatasetPanel(QWidget):
     rgbdVariantChanged = Signal(str)        # RGBD 变体下拉切换
     settingsDirty = Signal()                # 路径有变动，请求保存 QSettings
 
-    def __init__(self, parent=None, start_dir_provider=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        start_dir_provider: Callable[[QLineEdit], str] | None = None,
+    ) -> None:
         super().__init__(parent)
         # browse 起始目录 QSettings fallback 提供者（由 Controller 注入，可空）
-        self._start_dir_provider = start_dir_provider
+        self._start_dir_provider: Callable[[QLineEdit], str] | None = start_dir_provider
         self._build_ui()
 
-    def set_start_dir_provider(self, provider):
+    def set_start_dir_provider(self, provider: Callable[[QLineEdit], str] | None) -> None:
         """供 Controller 在构造完成后注入 QSettings fallback 路径查询回调。"""
         self._start_dir_provider = provider
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         g = QGroupBox("数据集准备")
         form = QFormLayout(g)
 
@@ -144,12 +153,12 @@ class DatasetPanel(QWidget):
         self._apply_mode_state()
 
     # ---- 内部：模式切换 ----
-    def _on_mode_clicked(self):
+    def _on_mode_clicked(self) -> None:
         """模式切换时内部处理 enable/disable，再发出信号供 Controller 反应。"""
         self._apply_mode_state()
         self.modeChanged.emit()
 
-    def _apply_mode_state(self):
+    def _apply_mode_state(self) -> None:
         """根据当前模式启停控件（纯 UI 状态）。"""
         existing = self.rb_existing.isChecked()
         for row in (self.row_rgb, self.row_depth_npy, self.row_label, self.row_out):
@@ -162,7 +171,7 @@ class DatasetPanel(QWidget):
             w.setEnabled(existing)
 
     # ---- 内部：浏览对话框 ----
-    def _make_browse_row(self, le, is_dir=False, filt="All (*)"):
+    def _make_browse_row(self, le: QLineEdit, is_dir: bool = False, filt: str = "All (*)") -> QWidget:
         """创建 QLineEdit + "选择..." 按钮的组合控件。"""
         w = QWidget()
         h = QHBoxLayout(w)
@@ -173,7 +182,7 @@ class DatasetPanel(QWidget):
         h.addWidget(b)
         return w
 
-    def _resolve_start(self, le):
+    def _resolve_start(self, le: QLineEdit) -> str:
         """文件/目录对话框起始目录优先级：当前输入框 > QSettings 上次 > 项目根。"""
         cur = le.text().strip()
         if cur:
@@ -184,7 +193,7 @@ class DatasetPanel(QWidget):
                 return v
         return str(_REPO_ROOT)
 
-    def _browse(self, le, is_dir, filt):
+    def _browse(self, le: QLineEdit, is_dir: bool, filt: str) -> None:
         """打开文件/目录对话框并设置文本。"""
         start = self._resolve_start(le)
         if is_dir:
@@ -195,7 +204,7 @@ class DatasetPanel(QWidget):
             le.setText(p)
             self.settingsDirty.emit()
 
-    def _on_browse_existing(self):
+    def _on_browse_existing(self) -> None:
         """浏览已有数据集根目录。"""
         start = self._resolve_start(self.le_existing)
         p = QFileDialog.getExistingDirectory(self, "选择已有数据集根目录", start)
@@ -205,13 +214,13 @@ class DatasetPanel(QWidget):
             self.existingDirChanged.emit()
 
     # ---- 内部：变体下拉 ----
-    def _on_variant_text_changed(self, dir_name):
+    def _on_variant_text_changed(self, dir_name: str) -> None:
         """用户从下拉选择变体时发出信号。"""
         if dir_name:
             self.rgbdVariantChanged.emit(dir_name)
 
     # ---- 公开：变体下拉操作（供 Controller 调用）----
-    def populate_variants(self, variants, saved=None):
+    def populate_variants(self, variants: list[tuple[str, Path]], saved: str | None = None) -> None:
         """填充 RGBD 变体下拉并选择默认项（blockSignals 避免填充期间误触发）。
 
         variants: list[(dir_name, yaml_path)]
@@ -240,21 +249,21 @@ class DatasetPanel(QWidget):
         if default_name:
             self.rgbdVariantChanged.emit(default_name)
 
-    def clear_variants(self):
+    def clear_variants(self) -> None:
         """清空变体下拉（blockSignals 避免误触发）。"""
         self.cb_rgbd_variant.blockSignals(True)
         self.cb_rgbd_variant.clear()
         self.cb_rgbd_variant.blockSignals(False)
 
     # ---- 公开：展示方法 ----
-    def reset_stats(self):
+    def reset_stats(self) -> None:
         """清空统计显示，避免上一套数据集数据残留造成误解。"""
         for lbl in (self.lbl_total, self.lbl_train, self.lbl_val,
                     self.lbl_test, self.lbl_kpt, self.lbl_rgbch, self.lbl_rgbdch,
                     self.lbl_rgb_ds, self.lbl_rgbd_ds):
             lbl.setText("-")
 
-    def set_stats(self, merged, ready):
+    def set_stats(self, merged: dict[str, Any], ready: str) -> None:
         """写回现场统计/报告合并后的统计 + 状态行（None 值显示"-"）。"""
         self.lbl_total.setText(str(merged["total"]))
         self.lbl_train.setText(str(merged["train"]))
@@ -272,24 +281,24 @@ class DatasetPanel(QWidget):
             str(merged["rgbd_dataset"]) if merged.get("rgbd_dataset") is not None else "-")
         self.lbl_ready.setText(ready)
 
-    def set_ready(self, text):
+    def set_ready(self, text: str) -> None:
         self.lbl_ready.setText(text)
 
-    def set_rgb_yaml_text(self, text):
+    def set_rgb_yaml_text(self, text: str) -> None:
         self.le_rgb_yaml.setText(text or "-")
 
-    def set_rgbd_yaml_text(self, text):
+    def set_rgbd_yaml_text(self, text: str) -> None:
         self.le_rgbd_yaml.setText(text or "-")
 
-    def set_rgbd_ds_text(self, text):
+    def set_rgbd_ds_text(self, text: str) -> None:
         self.lbl_rgbd_ds.setText(text or "-")
 
-    def set_prepare_enabled(self, enabled):
+    def set_prepare_enabled(self, enabled: bool) -> None:
         """供 Controller 在任务运行期间控制 prepare 按钮启停。"""
         self.btn_prepare.setEnabled(enabled)
 
-    def is_existing_mode(self):
+    def is_existing_mode(self) -> bool:
         return self.rb_existing.isChecked()
 
-    def is_new_mode(self):
+    def is_new_mode(self) -> bool:
         return self.rb_new.isChecked()

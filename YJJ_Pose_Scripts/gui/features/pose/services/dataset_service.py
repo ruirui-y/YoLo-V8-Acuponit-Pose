@@ -13,12 +13,13 @@
 """
 import json
 from pathlib import Path
+from typing import Any
 
 
 class DatasetService:
 
     @staticmethod
-    def parse_variant_yaml(yaml_path):
+    def parse_variant_yaml(yaml_path: str | Path) -> dict[str, Any]:
         """极简解析单个 data_*.yaml，返回 {rgbd:bool, channels:int|None, kpt:int|None}。
 
         支持内联列表 kpt_shape:[7,3] 与多行块列表；不依赖 PyYAML。
@@ -69,7 +70,7 @@ class DatasetService:
         return {"rgbd": rgbd, "channels": channels, "kpt": kpt}
 
     @staticmethod
-    def scan_rgbd_variants(base):
+    def scan_rgbd_variants(base: str | Path) -> list[tuple[str, Path]]:
         """扫描 base 下所有子目录，找出 yaml 同时满足 rgbd:true 且 channels:4 的 4ch 数据集。
 
         返回 list[(dir_name, yaml_path)]，按 dir_name 排序。
@@ -88,7 +89,7 @@ class DatasetService:
         return found
 
     @staticmethod
-    def resolve_test_set(yaml_path):
+    def resolve_test_set(yaml_path: str | Path) -> tuple[Path | None, int, set[str] | None]:
         """解析单个 data_*.yaml 的 path + test 字段，返回 (test_images_dir, count, id_set)。
 
         - test_images_dir: 真实测试图像目录（path 为相对时按 yaml 父目录解析）
@@ -127,7 +128,7 @@ class DatasetService:
         return test_dir, len(ids), set(ids)
 
     @staticmethod
-    def parse_yaml_meta(rgb_yaml, rgbd_yaml):
+    def parse_yaml_meta(rgb_yaml: str | Path, rgbd_yaml: str | Path) -> tuple[int | None, int | None, int | None]:
         """极简解析本项目 data_rgb.yaml / data_rgbd.yaml：
         返回 (kpt_shape_first, rgb_channels, rgbd_channels)。
         """
@@ -174,7 +175,7 @@ class DatasetService:
         return (rk if rk is not None else dk), rc, dc
 
     @staticmethod
-    def stat_existing_dataset(base, rgbd_sub, rgbd_yaml):
+    def stat_existing_dataset(base: str | Path, rgbd_sub: str, rgbd_yaml: Path | None) -> dict[str, Any] | None:
         """现场统计已有数据集：数 images 各 split，校验 RGB 与所选 RGBD 变体一致，
         读各自 yaml 的 kpt_shape/channels。返回 dict（含 rgb_dataset/rgbd_dataset 来源名），
         images 目录缺失时返回 None。只读不写回，不直接设置界面标签。"""
@@ -219,7 +220,7 @@ class DatasetService:
         return result
 
     @staticmethod
-    def merge_report(stat, base):
+    def merge_report(stat: dict[str, Any], base: str | Path) -> tuple[dict[str, Any], str]:
         """合并 dataset_report.json 有效字段与现场统计结果。
 
         返回 (merged_dict, ready_text)。
@@ -257,7 +258,7 @@ class DatasetService:
         return merged, ready
 
     @staticmethod
-    def load_report_json(out_dir, cls):
+    def load_report_json(out_dir: str | Path, cls: str) -> dict[str, Any] | None:
         """从 prepare 产物路径读取 dataset_report.json，返回 dict 或 None。"""
         rp = Path(out_dir) / "dataset" / cls / "dataset_report.json"
         if not rp.exists():
@@ -268,7 +269,7 @@ class DatasetService:
             return None
 
     @staticmethod
-    def report_to_stats(d):
+    def report_to_stats(d: dict[str, Any]) -> tuple[dict[str, Any], str]:
         """把 dataset_report.json 的字段名映射为 stats dict（供 DatasetPanel.set_stats）。
 
         缺失字段统一显示"-"；validation_passed 决定 ready 文本。
@@ -289,7 +290,7 @@ class DatasetService:
         return merged, ready
 
     @staticmethod
-    def format_id_consistency(rgb_cnt, rgbd_cnt, rgb_ids, rgbd_ids):
+    def format_id_consistency(rgb_cnt: int, rgbd_cnt: int, rgb_ids: set[str] | None, rgbd_ids: set[str] | None) -> str:
         """格式化 RGB vs RGBD test ID 一致性只读文本（None 表示目录缺失）。"""
         if rgb_ids is None or rgbd_ids is None:
             return "无法校验（目录缺失）"
@@ -305,7 +306,7 @@ class DatasetService:
         return "不一致（" + "，".join(parts) + "）"
 
     @staticmethod
-    def format_id_mismatch_error(rgb_cnt, rgbd_cnt, rgb_ids, rgbd_ids):
+    def format_id_mismatch_error(rgb_cnt: int, rgbd_cnt: int, rgb_ids: set[str] | None, rgbd_ids: set[str] | None) -> str:
         """构造 test ID 不一致时对比测试被拒绝的错误消息（含前 10 个独有 ID）。"""
         only_rgb = sorted(rgb_ids - rgbd_ids)
         only_rgbd = sorted(rgbd_ids - rgb_ids)

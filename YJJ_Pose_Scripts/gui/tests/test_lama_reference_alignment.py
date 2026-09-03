@@ -14,6 +14,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_lama_reference_alignment.py
 """
+from __future__ import annotations
+
 import os
 import sys
 import traceback
@@ -29,7 +31,7 @@ from features.lama.services.reference_alignment_service import (   # noqa: E402
 )
 
 
-def _check(name, cond, failures, detail=""):
+def _check(name: str, cond: bool, failures: list[str], detail: str = "") -> None:
     if cond:
         print(f"  [OK]   {name}")
     else:
@@ -38,7 +40,7 @@ def _check(name, cond, failures, detail=""):
             failures.append(name)
 
 
-def _make_test_image_and_mask(size=(640, 480), centers=None, patch_size=30, shift=(0, 0)):
+def _make_test_image_and_mask(size: tuple[int, int] = (640, 480), centers: list[tuple[int, int]] | None = None, patch_size: int = 30, shift: tuple[int, int] = (0, 0)) -> tuple[np.ndarray, np.ndarray]:
     """生成测试图 + mask：在指定 center 周围放置随机噪声 patch。
 
     返回 (image_rgb HxWx3 uint8, mask HxW uint8 0/255)
@@ -68,7 +70,7 @@ def _make_test_image_and_mask(size=(640, 480), centers=None, patch_size=30, shif
     return img, mask
 
 
-def main():
+def main() -> None:
     failures = []
     rng = np.random.RandomState(0)
 

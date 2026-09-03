@@ -9,6 +9,8 @@ Panel 只暴露一个视觉区域：
 停止按钮发出 stopRequested 信号（Controller 处理进程终止）。
 （类名暂不改动，保持最小改动。）
 """
+from __future__ import annotations
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGroupBox, QHBoxLayout, QLabel, QPushButton, QWidget,
@@ -19,11 +21,11 @@ class StatusLogPanel(QWidget):
     # ---- 对外信号 ----
     stopRequested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._build_ui()
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         # ---- 状态区（放到左侧工作区）----
         self.status_widget = QGroupBox("状态", self)
         h5 = QHBoxLayout(self.status_widget)
@@ -36,9 +38,9 @@ class StatusLogPanel(QWidget):
         h5.addWidget(self.btn_stop)
 
     # ---- 公开：展示方法 ----
-    def set_status(self, text):
+    def set_status(self, text: str) -> None:
         self.lbl_status.setText(text)
 
-    def set_stop_enabled(self, enabled):
+    def set_stop_enabled(self, enabled: bool) -> None:
         """供 Controller 在任务运行期间控制停止按钮启停。"""
         self.btn_stop.setEnabled(enabled)

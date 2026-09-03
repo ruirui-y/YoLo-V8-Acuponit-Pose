@@ -3,6 +3,10 @@
 Panel 只负责控件创建 / 展示 / 发信号；按钮 clicked 连接到自己的 signal，
 Controller 连接这些 signal 并处理业务逻辑。
 """
+from __future__ import annotations
+
+from typing import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
@@ -20,17 +24,21 @@ class TrainPanel(QWidget):
     baseWeightChanged = Signal(str)         # 基础权重文本变更（editingFinished）
     settingsDirty = Signal()                # 路径有变动，请求保存 QSettings
 
-    def __init__(self, parent=None, start_dir_provider=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        start_dir_provider: Callable[[QLineEdit], str] | None = None,
+    ) -> None:
         super().__init__(parent)
         # browse 起始目录 QSettings fallback 提供者（由 Controller 注入，可空）
-        self._start_dir_provider = start_dir_provider
+        self._start_dir_provider: Callable[[QLineEdit], str] | None = start_dir_provider
         self._build_ui()
 
-    def set_start_dir_provider(self, provider):
+    def set_start_dir_provider(self, provider: Callable[[QLineEdit], str] | None) -> None:
         """供 Controller 在构造完成后注入 QSettings fallback 路径查询回调。"""
         self._start_dir_provider = provider
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         # ---- 运行环境（Python 训练环境）----
         ge = QGroupBox("运行环境")
         fe = QFormLayout(ge)
@@ -79,7 +87,7 @@ class TrainPanel(QWidget):
         v.addWidget(gw)
 
     # ---- 内部：浏览对话框 ----
-    def _make_browse_row(self, le, is_dir=False, filt="All (*)"):
+    def _make_browse_row(self, le: QLineEdit, is_dir: bool = False, filt: str = "All (*)") -> QWidget:
         """创建 QLineEdit + "选择..." 按钮的组合控件。"""
         w = QWidget()
         h = QHBoxLayout(w)
@@ -90,7 +98,7 @@ class TrainPanel(QWidget):
         h.addWidget(b)
         return w
 
-    def _resolve_start(self, le):
+    def _resolve_start(self, le: QLineEdit) -> str:
         """文件/目录对话框起始目录优先级：当前输入框 > QSettings 上次 > 项目根。"""
         cur = le.text().strip()
         if cur:
@@ -101,7 +109,7 @@ class TrainPanel(QWidget):
                 return v
         return str(_REPO_ROOT)
 
-    def _browse(self, le, is_dir, filt):
+    def _browse(self, le: QLineEdit, is_dir: bool, filt: str) -> None:
         """打开文件/目录对话框并设置文本。"""
         start = self._resolve_start(le)
         if is_dir:
@@ -116,10 +124,10 @@ class TrainPanel(QWidget):
                 self.baseWeightChanged.emit(self.le_base.text().strip())
 
     # ---- 公开：展示方法 ----
-    def set_4ch_text(self, text):
+    def set_4ch_text(self, text: str) -> None:
         self.lbl_4ch.setText(text)
 
-    def set_operation_buttons_enabled(self, enabled):
+    def set_operation_buttons_enabled(self, enabled: bool) -> None:
         """供 Controller 在任务运行期间控制训练/构建按钮启停。"""
         self.btn_train_rgb.setEnabled(enabled)
         self.btn_build.setEnabled(enabled)

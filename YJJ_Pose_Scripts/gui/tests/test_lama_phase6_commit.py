@@ -14,6 +14,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_lama_phase6_commit.py
 """
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -35,8 +37,13 @@ from features.lama.lama_controller import (                # noqa: E402
     LamaController, _CommitSnapshot, _InpaintWorker,
 )
 
+from typing import TYPE_CHECKING
 
-def _check(name, cond, failures, detail=""):
+if TYPE_CHECKING:
+    from features.lama.widgets.inpaint_canvas import InpaintCanvas
+
+
+def _check(name: str, cond: bool, failures: list[str], detail: str = "") -> None:
     if cond:
         print(f"  [OK]   {name}")
     else:
@@ -45,7 +52,7 @@ def _check(name, cond, failures, detail=""):
             failures.append(name)
 
 
-def _make_test_image(path, size=(640, 480), centers=None):
+def _make_test_image(path: str, size: tuple[int, int] = (640, 480), centers: list[tuple[int, int]] | None = None) -> np.ndarray:
     """生成测试图片并保存到 path。"""
     w, h = size
     img = np.full((h, w, 3), 100, dtype=np.uint8)
@@ -55,7 +62,7 @@ def _make_test_image(path, size=(640, 480), centers=None):
     return img
 
 
-def _draw_7_masks(canvas, centers, radius=12):
+def _draw_7_masks(canvas: "InpaintCanvas", centers: list[tuple[int, int]], radius: int = 12) -> None:
     """在 canvas 上画 7 个 mask 圆。"""
     from PySide6.QtCore import QPointF
     from PySide6.QtGui import QPainter, QPen, QBrush, QColor
@@ -69,7 +76,7 @@ def _draw_7_masks(canvas, centers, radius=12):
     canvas.set_mask(mask)
 
 
-def main():
+def main() -> None:
     failures = []
     tmpdir = tempfile.mkdtemp(prefix="lama_phase6_test_")
 

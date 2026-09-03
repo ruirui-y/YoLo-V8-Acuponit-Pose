@@ -14,6 +14,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_lama_mask_label.py
 """
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -30,7 +32,7 @@ from features.lama.services.mask_label_service import (   # noqa: E402
 )
 
 
-def _check(name, cond, failures, detail=""):
+def _check(name: str, cond: bool, failures: list[str], detail: str = "") -> None:
     """统一断言：cond 为 True 打印 [OK]，否则 [FAIL] 并加入 failures。"""
     if cond:
         print(f"  [OK]   {name}")
@@ -40,7 +42,7 @@ def _check(name, cond, failures, detail=""):
             failures.append(name)
 
 
-def _make_mask_with_circles(size=(640, 480), centers=None, radius=12):
+def _make_mask_with_circles(size: tuple[int, int] = (640, 480), centers: list[tuple[int, int]] | None = None, radius: int = 12) -> np.ndarray:
     """生成测试 mask：在指定 center 位置画白圆。"""
     w, h = size
     mask = np.zeros((h, w), dtype=np.uint8)
@@ -50,7 +52,7 @@ def _make_mask_with_circles(size=(640, 480), centers=None, radius=12):
     return mask
 
 
-def main():
+def main() -> None:
     failures = []
 
     # ================================================================ 1. extract_components 7 个

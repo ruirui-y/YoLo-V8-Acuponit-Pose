@@ -4,12 +4,13 @@
 Controller 只接收解析后的 dict。
 """
 import json
+from typing import Any
 
 
 class ResultParser:
 
     @staticmethod
-    def parse_pose_eval_json(line):
+    def parse_pose_eval_json(line: str) -> dict[str, Any] | None:
         """从单行 stdout 中提取 POSE_EVAL_JSON 后面的 JSON dict。
 
         不含 POSE_EVAL_JSON 标记时返回 None；解析失败时返回 None。
@@ -22,7 +23,7 @@ class ResultParser:
             return None
 
     @staticmethod
-    def parse_depth_ablation_json(line):
+    def parse_depth_ablation_json(line: str) -> dict[str, Any] | None:
         """从单行 stdout 中提取 DEPTH_ABLATION_JSON 后面的 JSON dict。
 
         不含 DEPTH_ABLATION_JSON 标记时返回 None；解析失败时返回 None。

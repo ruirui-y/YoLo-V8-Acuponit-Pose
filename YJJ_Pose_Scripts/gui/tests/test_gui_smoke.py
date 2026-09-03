@@ -33,6 +33,8 @@
 启动：
     python YJJ_Pose_Scripts/gui/tests/test_gui_smoke.py
 """
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -44,7 +46,7 @@ GUI_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(GUI_DIR))
 
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QRadioButton  # noqa: E402
 from PySide6.QtTest import QTest, QSignalSpy  # noqa: E402
 
 # ---- 在 import MainWindow 之前 patch SettingsStore，避免构造期间写入用户配置 ----
@@ -59,7 +61,7 @@ _TMP_INI_PATH = _TMP_INI.name
 _real_settings_init = settings_store_mod.SettingsStore.__init__
 
 
-def _test_settings_init(self, org="YJJ", app="RGBDPoseTrainGUI"):
+def _test_settings_init(self, org: str = "YJJ", app: str = "RGBDPoseTrainGUI") -> None:
     """测试专用：用临时 INI 文件完全替代 QSettings(org, app) 注册表。"""
     self._settings = QSettings(_TMP_INI_PATH, QSettings.Format.IniFormat)
 
@@ -70,8 +72,13 @@ settings_store_mod.SettingsStore.__init__ = _test_settings_init
 from main_window import MainWindow  # noqa: E402
 from features.pose.pose_page import PosePage  # noqa: E402
 
+from typing import TYPE_CHECKING
 
-def _check(name, cond, detail="", failures=None):
+if TYPE_CHECKING:
+    from features.pose.panels.dataset_panel import DatasetPanel
+
+
+def _check(name: str, cond: bool, detail: str = "", failures: list[str] | None = None) -> None:
     if cond:
         print(f"  [OK]   {name}")
     else:
@@ -80,7 +87,7 @@ def _check(name, cond, detail="", failures=None):
             failures.append(name)
 
 
-def _click_radio(panel, btn):
+def _click_radio(panel: "DatasetPanel", btn: "QRadioButton") -> None:
     """模拟用户点击单选按钮：setChecked + 触发 buttonClicked 信号。"""
     btn.setChecked(True)
     panel.mode_group.buttonClicked.emit(btn)
@@ -88,7 +95,7 @@ def _click_radio(panel, btn):
     QTest.qWait(10)
 
 
-def main():
+def main() -> None:
     failures = []
     app = QApplication.instance() or QApplication(sys.argv)
     # 关闭 QFileDialog 等模态对话框自动退出保护（本测试不应弹任何模态）

@@ -32,11 +32,16 @@
     scene == image，即 scene 坐标即原图像素坐标。
     鼠标 widget 坐标 -> mapToScene -> 原图像素坐标。
 """
+from __future__ import annotations
+
 import numpy as np
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QImage, QPainter, QPen, QColor, QBrush, QPixmap
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
+from PySide6.QtGui import (
+    QImage, QPainter, QPen, QColor, QBrush, QPixmap,
+    QMouseEvent, QWheelEvent, QResizeEvent,
+)
 from PySide6.QtWidgets import (
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
+    QWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
 )
 
 
@@ -88,7 +93,7 @@ class InpaintCanvas(QGraphicsView):
     maskChanged = Signal()
     imageChanged = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         # ---- 渲染参数（与 C++ 一致）----
@@ -100,18 +105,18 @@ class InpaintCanvas(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
 
         # ---- 内部状态 ----
-        self._src = QImage()                            # RGB888
-        self._mask = QImage()                           # Grayscale8 (0=keep, 255=hole)
-        self._brush_radius = 9
-        self._drawing = False
-        self._last_paint_pos = QPointF()
-        self._zoom = 1.0
+        self._src: QImage = QImage()                            # RGB888
+        self._mask: QImage = QImage()                           # Grayscale8 (0=keep, 255=hole)
+        self._brush_radius: int = 9
+        self._drawing: bool = False
+        self._last_paint_pos: QPointF = QPointF()
+        self._zoom: float = 1.0
 
         # ---- 场景与图层 ----
-        self._scene = QGraphicsScene(self)
+        self._scene: QGraphicsScene = QGraphicsScene(self)
         self.setScene(self._scene)
-        self._item_img = self._scene.addPixmap(QPixmap())  # 底层：原图
-        self._item_mask = self._scene.addPixmap(QPixmap()) # 上层：mask overlay
+        self._item_img: QGraphicsPixmapItem = self._scene.addPixmap(QPixmap())  # 底层：原图
+        self._item_mask: QGraphicsPixmapItem = self._scene.addPixmap(QPixmap()) # 上层：mask overlay
         self._item_mask.setZValue(10)
 
     # ============================================================ 公开 API
@@ -123,7 +128,7 @@ class InpaintCanvas(QGraphicsView):
         self.set_image(img)
         return True
 
-    def set_image(self, img: QImage):
+    def set_image(self, img: QImage) -> None:
         """设置当前显示图（同时重置 mask）。"""
         if img.isNull():
             return
@@ -140,7 +145,7 @@ class InpaintCanvas(QGraphicsView):
 
         self.imageChanged.emit()
 
-    def set_mask(self, mask_gray: QImage):
+    def set_mask(self, mask_gray: QImage) -> None:
         """外部设置 mask（Grayscale8，0/255）。尺寸不符会快速缩放。"""
         if self._src.isNull():
             return
@@ -169,29 +174,29 @@ class InpaintCanvas(QGraphicsView):
         """当前 mask（Grayscale8，0=保留 / 255=洞）。"""
         return self._mask
 
-    def set_brush_radius(self, r: int):
+    def set_brush_radius(self, r: int) -> None:
         self._brush_radius = max(1, r)
 
     def brush_radius(self) -> int:
         return self._brush_radius
 
     # ============================================================ 内部更新
-    def _update_pixmap(self):
+    def _update_pixmap(self) -> None:
         if self._src.isNull():
             return
         self._item_img.setPixmap(QPixmap.fromImage(self._src))
 
-    def _update_mask_pixmap(self):
+    def _update_mask_pixmap(self) -> None:
         if self._mask.isNull():
             return
         overlay = _make_mask_overlay_rgba(self._mask, 110)
         self._item_mask.setPixmap(QPixmap.fromImage(overlay))
 
-    def _view_to_scene_pos(self, vp) -> QPointF:
+    def _view_to_scene_pos(self, vp: QPoint) -> QPointF:
         return self.mapToScene(vp)
 
     # ============================================================ 画笔
-    def _apply_brush(self, a: QPointF, b: QPointF, erase: bool):
+    def _apply_brush(self, a: QPointF, b: QPointF, erase: bool) -> None:
         """在 mask 上画一笔（a->b 连线 + b 处圆）。"""
         if self._src.isNull() or self._mask.isNull():
             return
@@ -210,7 +215,7 @@ class InpaintCanvas(QGraphicsView):
         p.end()
 
     # ============================================================ 鼠标事件
-    def mousePressEvent(self, e):
+    def mousePressEvent(self, e: QMouseEvent) -> None:
         if self._src.isNull():
             super().mousePressEvent(e)
             return
@@ -228,7 +233,7 @@ class InpaintCanvas(QGraphicsView):
         self.maskChanged.emit()
         e.accept()
 
-    def mouseMoveEvent(self, e):
+    def mouseMoveEvent(self, e: QMouseEvent) -> None:
         # 连续画笔：左键拖动涂白、右键拖动擦黑
         buttons = e.buttons()
         if buttons & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton):
@@ -242,11 +247,11 @@ class InpaintCanvas(QGraphicsView):
             return
         super().mouseMoveEvent(e)
 
-    def mouseReleaseEvent(self, e):
+    def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         self._drawing = False
         super().mouseReleaseEvent(e)
 
-    def wheelEvent(self, e):
+    def wheelEvent(self, e: QWheelEvent) -> None:
         # Ctrl+滚轮缩放（与 C++ 一致）
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = 1.1 if e.angleDelta().y() > 0 else 1.0 / 1.1
@@ -256,6 +261,6 @@ class InpaintCanvas(QGraphicsView):
             return
         super().wheelEvent(e)
 
-    def resizeEvent(self, e):
+    def resizeEvent(self, e: QResizeEvent) -> None:
         super().resizeEvent(e)
         # 不强行 fit，避免用户缩放被重置（与 C++ 一致）

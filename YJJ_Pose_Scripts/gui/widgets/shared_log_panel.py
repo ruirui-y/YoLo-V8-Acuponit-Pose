@@ -12,13 +12,15 @@
 各 feature 通过构造注入的 log_sink（即本类的 append_log）写日志，
 不持有本类实例，也不知道日志控件的存在。
 """
-from PySide6.QtWidgets import QGroupBox, QPlainTextEdit, QVBoxLayout
+from __future__ import annotations
+
+from PySide6.QtWidgets import QGroupBox, QPlainTextEdit, QVBoxLayout, QWidget
 
 
 class SharedLogPanel(QGroupBox):
     """共享运行日志面板：全应用唯一的日志 QPlainTextEdit 宿主。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("运行日志", parent)
         lay = QVBoxLayout(self)
         self.log = QPlainTextEdit()
@@ -27,7 +29,7 @@ class SharedLogPanel(QGroupBox):
         lay.addWidget(self.log)
 
     # ---- 公开：日志 sink（注入给各 feature Controller）----
-    def append_log(self, text):
+    def append_log(self, text: str) -> None:
         """追加日志文本并自动滚动到底部。"""
         self.log.appendPlainText(text)
         sb = self.log.verticalScrollBar()

@@ -13,8 +13,11 @@
     PosePage → PoseController → Services / ProcessRunner / SettingsStore
     PoseController 连接 Panel signals，Panel 不调用 Controller。
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 from gui_config import _DEFAULT_BASE_WEIGHT, _REPO_ROOT
 from core.process_runner import ProcessRunner
@@ -23,37 +26,54 @@ from .services.dataset_service import DatasetService
 from .services.command_service import CommandService
 from .services.result_parser import ResultParser
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QLineEdit
+    from .panels.dataset_panel import DatasetPanel
+    from .panels.train_panel import TrainPanel
+    from .panels.eval_panel import EvalPanel
+    from .panels.status_log_panel import StatusLogPanel
+
 
 class PoseController:
     """Pose 工作区协调器：连接 Panel 信号 → 调用 Service / ProcessRunner。"""
 
-    def __init__(self, dataset_panel, train_panel, eval_panel, status_log_panel,
-                 log_sink=None):
-        self.dataset_panel = dataset_panel
-        self.train_panel = train_panel
-        self.eval_panel = eval_panel
-        self.status_log_panel = status_log_panel
+    def __init__(
+        self,
+        dataset_panel: DatasetPanel,
+        train_panel: TrainPanel,
+        eval_panel: EvalPanel,
+        status_log_panel: StatusLogPanel,
+        log_sink: Callable[[str], None] | None = None,
+    ) -> None:
+        self.dataset_panel: DatasetPanel = dataset_panel
+        self.train_panel: TrainPanel = train_panel
+        self.eval_panel: EvalPanel = eval_panel
+        self.status_log_panel: StatusLogPanel = status_log_panel
 
         # ---- 应用级共享日志 sink（SharedLogPanel.append_log）----
         # 日志统一写到 MainWindow 右侧唯一日志面板；status 仍走 Pose status panel。
-        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
+        self._log_sink: Callable[[str], None] = (
+            log_sink if callable(log_sink) else (lambda _text: None)
+        )
 
         # ---- 基础设施 ----
-        self._runner = ProcessRunner()
-        self._settings_store = SettingsStore()
+        self._runner: ProcessRunner = ProcessRunner()
+        self._settings_store: SettingsStore = SettingsStore()
 
         # ---- 状态 ----
-        self.rgb_yaml = None
-        self.rgbd_yaml = None
-        self._rgbd_variants = []
-        self.eval_results = {}
-        self.eval_chain = []
-        self._compare_pending = False
-        self._last_eval_result = None
-        self._last_ablate_result = None
+        self.rgb_yaml: Path | None = None
+        self.rgbd_yaml: Path | None = None
+        self._rgbd_variants: list[tuple[str, str]] = []
+        self.eval_results: dict[str, Any] = {}
+        self.eval_chain: list[str] = []
+        self._compare_pending: bool = False
+        self._last_eval_result: Any | None = None
+        self._last_ablate_result: Any | None = None
 
         # 路径 <-> QSettings key 映射
-        self._settings_keys = {
+        self._settings_keys: dict[QLineEdit, str] = {
             self.dataset_panel.le_existing: "existing_dir",
             self.dataset_panel.le_rgb: "rgb_dir",
             self.dataset_panel.le_depth_npy: "depth_npy_dir",
@@ -71,7 +91,7 @@ class PoseController:
         self._init()
 
     # ================================================================ 信号连接
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
         # ---- Dataset Panel ----
         dp = self.dataset_panel
         dp.modeChanged.connect(self._on_mode_changed)
@@ -116,7 +136,7 @@ class PoseController:
         self.eval_panel.set_start_dir_provider(start_dir_provider)
 
     # ================================================================ 初始化
-    def _init(self):
+    def _init(self) -> None:
         """启动恢复 + 设置默认值 + 应用当前模式。"""
         self._restore_settings()
         # Python 训练环境：未从 QSettings 恢复时回退到启动 GUI 的 Python
@@ -136,7 +156,7 @@ class PoseController:
         self._on_mode_changed()
 
     # ================================================================ 模式切换
-    def _on_mode_changed(self):
+    def _on_mode_changed(self) -> None:
         """切换"准备新数据集 / 使用已有数据集"后同步 yaml 路径与数据集统计。
 
         Panel 内部已处理控件启停，Controller 只负责业务逻辑。
@@ -147,7 +167,7 @@ class PoseController:
         self._refresh_eval_test_info()
         self._refresh_ablate_info()
 
-    def _update_yaml_paths(self):
+    def _update_yaml_paths(self) -> None:
         """根据当前模式统一计算 self.rgb_yaml / self.rgbd_yaml。"""
         if self.dataset_panel.is_existing_mode():
             root = self.dataset_panel.le_existing.text().strip()
@@ -166,7 +186,7 @@ class PoseController:
                 self.rgbd_yaml = None
 
     # ================================================================ 已有数据集检查
-    def _check_existing_dataset(self):
+    def _check_existing_dataset(self) -> None:
         """检查已选数据集根目录：扫描 RGBD 变体 + 现场统计 + report 合并。"""
         root = self.dataset_panel.le_existing.text().strip()
         if not root:
@@ -226,7 +246,7 @@ class PoseController:
         self._log("[状态] 已有数据集已加载")
 
     # ================================================================ RGBD 变体
-    def _apply_rgbd_variant(self, dir_name):
+    def _apply_rgbd_variant(self, dir_name: str) -> None:
         """应用选中的 RGBD 变体：同步 rgbd_yaml、显示、QSettings、刷新只读信息。"""
         variant = next((v for v in self._rgbd_variants if v[0] == dir_name), None)
         if variant is None:
@@ -245,7 +265,7 @@ class PoseController:
         self._refresh_ablate_info()
 
     # ================================================================ 测试数据只读信息
-    def _refresh_eval_test_info(self):
+    def _refresh_eval_test_info(self) -> None:
         """刷新"测试结果"区上方"当前测试数据"只读显示。"""
         ep = self.eval_panel
         rgb_dir, rgb_cnt, rgb_ids = DatasetService.resolve_test_set(self.rgb_yaml)
@@ -263,7 +283,7 @@ class PoseController:
             "id_text": id_text,
         })
 
-    def _refresh_ablate_info(self):
+    def _refresh_ablate_info(self) -> None:
         """刷新"Depth 消融测试"只读信息。"""
         ep = self.eval_panel
         ep.set_ablate_info({
@@ -272,14 +292,14 @@ class PoseController:
         })
 
     # ================================================================ QSettings
-    def _restore_settings(self):
+    def _restore_settings(self) -> None:
         """启动时恢复上一次保存的路径到对应输入框。"""
         for le, key in self._settings_keys.items():
             v = self._settings_store.get(key)
             if v:
                 le.setText(str(v))
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         """把当前所有路径写入 QSettings。"""
         for le, key in self._settings_keys.items():
             t = le.text().strip()
@@ -287,33 +307,33 @@ class PoseController:
                 self._settings_store.set(key, t)
         self._settings_store.sync()
 
-    def save_settings(self):
+    def save_settings(self) -> None:
         """供 PosePage / MainWindow closeEvent 调用。"""
         self._save_settings()
 
     # ================================================================ 状态/日志
-    def _set_status(self, text):
+    def _set_status(self, text: str) -> None:
         self.status_log_panel.set_status(text)
 
-    def _log(self, text):
+    def _log(self, text: str) -> None:
         """写应用级共享日志（带 [Pose] 前缀），不再写 Panel 内部控件。"""
         self._log_sink(f"[Pose] {text}")
 
     # ================================================================ 控件启停
-    def _disable_all(self, disable):
+    def _disable_all(self, disable: bool) -> None:
         """运行期间禁用所有操作按钮。"""
         self.dataset_panel.set_prepare_enabled(not disable)
         self.train_panel.set_operation_buttons_enabled(not disable)
         self.eval_panel.set_operation_buttons_enabled(not disable)
 
-    def _restore_controls(self):
+    def _restore_controls(self) -> None:
         """任务结束后恢复"当前模式应有的控件状态"。"""
         self.train_panel.set_operation_buttons_enabled(True)
         self.dataset_panel.set_prepare_enabled(self.dataset_panel.is_new_mode())
         self.eval_panel.set_operation_buttons_enabled(True)
 
     # ================================================================ 启动子进程
-    def _run(self, op, cmd, status):
+    def _run(self, op: str, cmd: list[str], status: str) -> None:
         """启动子进程执行指定命令。
 
         op: 操作标识（prepare / train_rgb / build / train_rgbd / eval_* / ablate）
@@ -337,7 +357,7 @@ class PoseController:
         self._runner.start(op, py, cmd, str(_REPO_ROOT), _REPO_ROOT)
 
     # ================================================================ prepare
-    def _on_prepare(self):
+    def _on_prepare(self) -> None:
         rgb = self.dataset_panel.le_rgb.text().strip()
         depth_npy = self.dataset_panel.le_depth_npy.text().strip()
         label = self.dataset_panel.le_label.text().strip()
@@ -359,11 +379,11 @@ class PoseController:
         self._run("prepare", cmd, "处理中")
 
     # ================================================================ 4ch 权重
-    def _on_base_weight_changed(self, _base_text):
+    def _on_base_weight_changed(self, _base_text: str) -> None:
         """基础权重文本变更后刷新 4ch 显示。"""
         self._refresh_4ch_label()
 
-    def _refresh_4ch_label(self):
+    def _refresh_4ch_label(self) -> None:
         """根据当前基础权重刷新 4ch 权重显示路径。"""
         base = self.train_panel.le_base.text().strip()
         if base:
@@ -373,7 +393,7 @@ class PoseController:
             self.train_panel.set_4ch_text("-")
 
     # ================================================================ 训练
-    def _on_train_rgb(self):
+    def _on_train_rgb(self) -> None:
         base = self.train_panel.le_base.text().strip()
         if not base:
             self._log("[错误] 请先选择基础 Pose 权重（yolov8n-pose.pt）")
@@ -391,7 +411,7 @@ class PoseController:
             self.train_panel.le_patience.text().strip(), base)
         self._run("train_rgb", cmd, "训练中")
 
-    def _on_build(self):
+    def _on_build(self) -> None:
         base = self.train_panel.le_base.text().strip()
         if not base:
             self._log("[错误] 请先选择基础 Pose 权重（yolov8n-pose.pt）")
@@ -402,7 +422,7 @@ class PoseController:
         cmd = CommandService.build_4ch_command(base)
         self._run("build", cmd, "处理中")
 
-    def _on_train_rgbd(self):
+    def _on_train_rgbd(self) -> None:
         base = self.train_panel.le_base.text().strip()
         if not base:
             self._log("[错误] 请先选择基础 Pose 权重（yolov8n-pose.pt）")
@@ -422,13 +442,13 @@ class PoseController:
         self._run("train_rgbd", cmd, "训练中")
 
     # ================================================================ 测试集评估
-    def _on_eval_rgb(self):
+    def _on_eval_rgb(self) -> None:
         self._start_eval_leg("rgb")
 
-    def _on_eval_rgbd(self):
+    def _on_eval_rgbd(self) -> None:
         self._start_eval_leg("rgbd")
 
-    def _on_eval_cmp(self):
+    def _on_eval_cmp(self) -> None:
         # 对比测试启动前再次校验 RGB 与 RGBD test ID 一致性
         _, rgb_cnt, rgb_ids = DatasetService.resolve_test_set(self.rgb_yaml)
         _, rgbd_cnt, rgbd_ids = DatasetService.resolve_test_set(self.rgbd_yaml)
@@ -451,7 +471,7 @@ class PoseController:
             self._compare_pending = False
             self._set_status("评估中断")
 
-    def _start_eval_leg(self, leg):
+    def _start_eval_leg(self, leg: str) -> bool:
         """启动单个 leg（rgb/rgbd）的 test 集评估；返回是否成功启动。"""
         name = "RGB" if leg == "rgb" else "RGBD"
         tag = "rgb" if leg == "rgb" else "rgbd"
@@ -470,7 +490,7 @@ class PoseController:
         self._run(f"eval_{leg}", cmd, f"评估{name}中")
         return True
 
-    def _finish_compare(self):
+    def _finish_compare(self) -> None:
         r = self.eval_results.get("rgb")
         d = self.eval_results.get("rgbd")
         if not r or not d:
@@ -484,7 +504,7 @@ class PoseController:
         self._set_status("对比完成")
 
     # ================================================================ Depth 消融
-    def _on_ablate_depth(self):
+    def _on_ablate_depth(self) -> None:
         weights = self.eval_panel.le_eval_rgbd.text().strip()
         yaml = self.rgbd_yaml
         ypath = str(yaml) if yaml else None
@@ -507,10 +527,10 @@ class PoseController:
         self._run("ablate", cmd, "Depth 消融中")
 
     # ================================================================ ProcessRunner 回调
-    def _on_started(self, op_name):
+    def _on_started(self, op_name: str) -> None:
         self._log(f"[启动] {op_name}")
 
-    def _on_stdout(self, data):
+    def _on_stdout(self, data: str) -> None:
         self._log(data)
         for line in data.splitlines():
             if "POSE_EVAL_JSON" in line:
@@ -526,10 +546,10 @@ class PoseController:
                 else:
                     self._log("[警告] 消融结果 JSON 解析失败")
 
-    def _on_stderr(self, data):
+    def _on_stderr(self, data: str) -> None:
         self._log("[err] " + data)
 
-    def _on_stop(self):
+    def _on_stop(self) -> None:
         """请求停止当前运行中的子进程。"""
         if self._runner.is_running:
             self._log("[停止] 正在请求停止当前任务...")
@@ -537,7 +557,7 @@ class PoseController:
         else:
             self._log("[停止] 当前没有运行中的任务")
 
-    def _on_finished(self, op, code):
+    def _on_finished(self, op: str, code: int) -> None:
         # ---- 评估（eval_*）分支 ----
         if op and op.startswith("eval_"):
             leg = op.split("_", 1)[1]
@@ -600,7 +620,7 @@ class PoseController:
             self._load_prep_status()
 
     # ================================================================ prepare 完成后
-    def _load_prep_status(self):
+    def _load_prep_status(self) -> None:
         """prepare 成功后从产物路径读取 dataset_report.json 并刷新数据集状态。"""
         out = self.dataset_panel.le_out.text().strip()
         cls = self.dataset_panel.le_class.text().strip() or "hand"

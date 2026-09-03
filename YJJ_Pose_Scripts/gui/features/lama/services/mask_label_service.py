@@ -25,10 +25,11 @@
 
 本服务不依赖 QWidget / PySide6，纯算法 + 文件 IO，方便自动测试。
 """
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from itertools import permutations
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -38,18 +39,18 @@ import numpy as np
 @dataclass
 class MaskComponent:
     """单个连通区域。"""
-    center: tuple            # (cx, cy) 浮点质心（原图像素坐标）
-    bbox: tuple              # (x, y, w, h) 整数包围盒
-    area: int                # 像素面积
+    center: tuple[float, float]            # (cx, cy) 浮点质心（原图像素坐标）
+    bbox: tuple[int, int, int, int]        # (x, y, w, h) 整数包围盒
+    area: int                              # 像素面积
 
 
 @dataclass
 class LabelResult:
     """Q 流程的标签生成结果。"""
-    bbox: tuple                       # (x, y, w, h) 像素 bbox（已 clamp 到图内）
-    ordered_points: list              # [(x, y), ...] 7 个点，索引 0..6 对应 stable ID
-    image_size: tuple                 # (w, h)
-    components: list = field(default_factory=list)  # 调试用：原始 component 列表
+    bbox: tuple[int, int, int, int]                       # (x, y, w, h) 像素 bbox（已 clamp 到图内）
+    ordered_points: list[tuple[float, float]]             # [(x, y), ...] 7 个点，索引 0..6 对应 stable ID
+    image_size: tuple[int, int]                           # (w, h)
+    components: list[MaskComponent] = field(default_factory=list)  # 调试用：原始 component 列表
 
 
 # ============================================================ MaskLabelService
@@ -68,12 +69,12 @@ class MaskLabelService:
     # ============================================================ 公开 API
     def make_label(self,
                   final_mask: np.ndarray,
-                  predicted_centers: dict,
-                  image_size: tuple,
+                  predicted_centers: dict[int, tuple[float, float]],
+                  image_size: tuple[int, int],
                   min_area: int = DEFAULT_MIN_AREA,
                   bbox_padding: int = DEFAULT_BBOX_PADDING,
                   max_assignment_distance: float = DEFAULT_MAX_ASSIGNMENT_DISTANCE,
-                  ) -> Optional[LabelResult]:
+                  ) -> LabelResult | None:
         """从 final mask + 预测中心生成完整标签结果。
 
         参数：
@@ -114,7 +115,7 @@ class MaskLabelService:
     def extract_components(self,
                           mask_gray8: np.ndarray,
                           min_area: int = DEFAULT_MIN_AREA
-                          ) -> list:
+                          ) -> list[MaskComponent]:
         """从二值 mask 提取所有有效 connected component。
 
         与 C++ AlignToReference::BuildLocalTracks 一致：
@@ -158,10 +159,10 @@ class MaskLabelService:
         return components
 
     def assign_stable_ids(self,
-                          components: list,
-                          predicted_centers: dict,
+                          components: list[MaskComponent],
+                          predicted_centers: dict[int, tuple[float, float]],
                           max_distance: float = DEFAULT_MAX_ASSIGNMENT_DISTANCE,
-                          ) -> Optional[list]:
+                          ) -> list[tuple[float, float]] | None:
         """一对一最小距离 assignment：每个 ID -> 唯一一个 Component（全局最优）。
 
         算法（P0-5）：
@@ -226,10 +227,10 @@ class MaskLabelService:
         return ordered_points
 
     def build_bbox(self,
-                  components: list,
+                  components: list[MaskComponent],
                   padding: int,
-                  image_size: tuple
-                  ) -> tuple:
+                  image_size: tuple[int, int]
+                  ) -> tuple[int, int, int, int]:
         """由 7 个 final MaskComponent.bbox 的 union + padding 生成 BoundingBox。
 
         P0-4: 必须使用 7 个 component 的 bbox union，不能用 keypoint 的 min/max。
@@ -263,9 +264,9 @@ class MaskLabelService:
         return (min_x, min_y, max_x - min_x, max_y - min_y)
 
     def make_label_content(self,
-                           bbox: tuple,
-                           ordered_points: list,
-                           image_size: tuple
+                           bbox: tuple[int, int, int, int],
+                           ordered_points: list[tuple[float, float]],
+                           image_size: tuple[int, int]
                            ) -> str:
         """生成 YOLO Pose 标签内容字符串（不写文件）。
 
@@ -304,9 +305,9 @@ class MaskLabelService:
 
     def save_label(self,
                   path: str,
-                  bbox: tuple,
-                  ordered_points: list,
-                  image_size: tuple
+                  bbox: tuple[int, int, int, int],
+                  ordered_points: list[tuple[float, float]],
+                  image_size: tuple[int, int]
                   ) -> bool:
         """写出 YOLO Pose 标签文件。
 

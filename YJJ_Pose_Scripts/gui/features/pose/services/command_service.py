@@ -11,13 +11,15 @@ from gui_config import _FOURCH_DIR, _SCRIPTS
 class CommandService:
 
     @staticmethod
-    def derive_4ch_path(base_text):
+    def derive_4ch_path(base_text: str) -> Path:
         """由基础权重派生 4ch 输出路径：固定放到 weights/4ch/<stem>_4ch.pt。"""
         base = Path(base_text)
         return _FOURCH_DIR / f"{base.stem}_4ch.pt"
 
     @staticmethod
-    def build_prepare_command(rgb, depth_npy, label, out, cls, low, high):
+    def build_prepare_command(
+        rgb: str, depth_npy: str, label: str, out: str, cls: str, low: float, high: float,
+    ) -> list[str]:
         """构造 prepare 子进程参数。"""
         return [
             str(_SCRIPTS["prepare"]),
@@ -27,7 +29,9 @@ class CommandService:
         ]
 
     @staticmethod
-    def build_train_rgb_command(yaml, fliplr, patience, weights):
+    def build_train_rgb_command(
+        yaml: Path, fliplr: str, patience: str, weights: str,
+    ) -> list[str]:
         """构造 RGB 训练子进程参数。"""
         return [
             str(_SCRIPTS["train_rgb"]),
@@ -38,7 +42,9 @@ class CommandService:
         ]
 
     @staticmethod
-    def build_train_rgbd_command(yaml, fliplr, patience, weights):
+    def build_train_rgbd_command(
+        yaml: Path, fliplr: str, patience: str, weights: str,
+    ) -> list[str]:
         """构造 RGBD 训练子进程参数。"""
         return [
             str(_SCRIPTS["train_rgbd"]),
@@ -49,14 +55,14 @@ class CommandService:
         ]
 
     @staticmethod
-    def build_4ch_command(base):
+    def build_4ch_command(base: str) -> list[str]:
         """构造 4ch 权重生成子进程参数。"""
         out = CommandService.derive_4ch_path(base)
         out.parent.mkdir(parents=True, exist_ok=True)
         return [str(_SCRIPTS["build"]), "--input", str(base), "--output", str(out)]
 
     @staticmethod
-    def build_eval_command(weights, yaml):
+    def build_eval_command(weights: str, yaml: Path) -> list[str]:
         """构造 test 集评估子进程参数（split 固定 test）。"""
         return [
             str(_SCRIPTS["eval"]),
@@ -65,7 +71,7 @@ class CommandService:
         ]
 
     @staticmethod
-    def build_depth_ablation_command(weights, yaml, out):
+    def build_depth_ablation_command(weights: str, yaml: Path | None, out: Path) -> list[str]:
         """构造 Depth 消融子进程参数（仅 true_depth / zero_depth，split 固定 test）。"""
         return [
             str(_SCRIPTS["ablate"]),

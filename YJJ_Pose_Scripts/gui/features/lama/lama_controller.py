@@ -36,12 +36,15 @@ Phase 6（本文件）：Q 原子 Commit 状态机（Image+Label+Rolling Ref+Nex
 - P1-4: _InpaintWorker 完成后 deleteLater + 清空 self._inpaint_worker / _test_one_worker；
         成功/失败都清理 _commit_snapshot；窗口关闭时 cleanup_worker 显式 wait / terminate。
 """
+from __future__ import annotations
+
 import os
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, QPointF, QThread, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap
@@ -56,6 +59,10 @@ from .services import (
 from .widgets.inpaint_canvas import _make_mask_overlay_rgba
 from core.settings_store import SettingsStore
 
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .lama_page import LamaPage
 
 # 支持的图片扩展名（与 C++ 一致）
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp"}
@@ -71,17 +78,17 @@ class _CommitSnapshot:
 
     后面 show_next_image() 会换掉 Canvas，异步 callback 里绝不能再读 canvas / current_index。
     """
-    current_index: int                 # 快照时的图片索引
-    current_path: str                  # 快照时的图片绝对路径
-    original_rgb: np.ndarray           # 原图 RGB（numpy，已 copy）
-    final_mask: np.ndarray             # 最终人工确认 mask（numpy，已 copy）
-    ordered_points: list               # stable ID -> (cx, cy) 7 个点（canonical 顺序）
-    bbox: tuple                        # 占位 BoundingBox (x, y, w, h)
-    image_size: tuple                  # (width, height)
-    output_path: str                   # out/ 目录下的输出图片路径
-    label_path: str                    # labels/ 目录下的标签路径
+    current_index: int                          # 快照时的图片索引
+    current_path: str                           # 快照时的图片绝对路径
+    original_rgb: np.ndarray                    # 原图 RGB（numpy，已 copy）
+    final_mask: np.ndarray                      # 最终人工确认 mask（numpy，已 copy）
+    ordered_points: list[tuple[float, float]]   # stable ID -> (cx, cy) 7 个点（canonical 顺序）
+    bbox: tuple[int, int, int, int]             # 占位 BoundingBox (x, y, w, h)
+    image_size: tuple[int, int]                 # (width, height)
+    output_path: str                            # out/ 目录下的输出图片路径
+    label_path: str                             # labels/ 目录下的标签路径
     # P0-3: 预验证过的 Reference State，文件写成功后 apply，避免半提交
-    prepared_ref: object = None        # _PreparedReference（opaque）
+    prepared_ref: object | None = None          # _PreparedReference（opaque）
 
 
 # ============================================================ 后台推理 Worker
@@ -99,15 +106,15 @@ class _InpaintWorker(QThread):
     """
     finished_with_result = Signal(object)     # np.ndarray（空数组表示失败）
 
-    def __init__(self, service, image: np.ndarray, mask: np.ndarray,
-                 parent=None):
+    def __init__(self, service: LamaInferenceService, image: np.ndarray,
+                 mask: np.ndarray, parent: QObject | None = None) -> None:
         # P1-4: parent 强制 None，避免 page 销毁时 "QThread: Destroyed while still running"
         super().__init__(None)
-        self._service = service
-        self._image = image
-        self._mask = mask
+        self._service: LamaInferenceService = service
+        self._image: np.ndarray = image
+        self._mask: np.ndarray = mask
 
-    def run(self):
+    def run(self) -> None:
         """在后台线程执行推理。"""
         try:
             result = self._service.run(self._image, self._mask)
@@ -125,13 +132,14 @@ class _ModelLoadWorker(QThread):
     """
     finished_with_result = Signal(bool, str, str)
 
-    def __init__(self, service, model_path: str, parent=None):
+    def __init__(self, service: LamaInferenceService, model_path: str,
+                 parent: QObject | None = None) -> None:
         # parent 强制 None，避免 page 销毁时 "QThread: Destroyed while still running"
         super().__init__(None)
-        self._service = service
-        self._model_path = model_path
+        self._service: LamaInferenceService = service
+        self._model_path: str = model_path
 
-    def run(self):
+    def run(self) -> None:
         """在后台线程加载模型。"""
         try:
             ok = self._service.load_model(self._model_path)
@@ -147,45 +155,47 @@ class _ModelLoadWorker(QThread):
 class LamaController(QObject):
     """LaMa 工作流协调器：连接 Page 信号 -> 调用 services / 更新 Page。"""
 
-    def __init__(self, page, log_sink=None):
+    def __init__(self, page: LamaPage, log_sink: Callable[[str], None] | None = None) -> None:
         super().__init__(page)
-        self._page = page
+        self._page: LamaPage = page
 
         # ---- 应用级共享日志 sink（SharedLogPanel.append_log）----
         # 与 PoseController 用的是同一个 callable；状态栏仍走 page.set_status_text。
-        self._log_sink = log_sink if callable(log_sink) else (lambda _text: None)
+        self._log_sink: Callable[[str], None] = (
+            log_sink if callable(log_sink) else (lambda _text: None)
+        )
 
         # ---- 状态 ----
-        self._image_files = []          # 当前文件夹所有图片绝对路径
-        self._current_index = -1        # 当前显示的图片索引
-        self._reference_index = -1     # 当前 Reference 对应的图片索引（rolling reference）
-        self._busy = False              # Q 流程进行中（避免状态被破坏）
+        self._image_files: list[str] = []     # 当前文件夹所有图片绝对路径
+        self._current_index: int = -1         # 当前显示的图片索引
+        self._reference_index: int = -1       # 当前 Reference 对应的图片索引（rolling reference）
+        self._busy: bool = False              # Q 流程进行中（避免状态被破坏）
 
         # ---- services ----
-        self._mask_label_service = MaskLabelService()
-        self._reference_alignment_service = ReferenceAlignmentService()
-        self._lama_inference_service = LamaInferenceService()
+        self._mask_label_service: MaskLabelService = MaskLabelService()
+        self._reference_alignment_service: ReferenceAlignmentService = ReferenceAlignmentService()
+        self._lama_inference_service: LamaInferenceService = LamaInferenceService()
 
         # ---- SettingsStore：仅用于记住最近一次 Open/TestOne 的图片目录 ----
         # 模型路径是固定的（features/lama/models/lama_fp32.onnx），这里绝不恢复
         # 之前删除的 lama/model_path / YJJ_LAMA_MODEL / 手动 LoadModel。
-        self._settings_store = SettingsStore()
+        self._settings_store: SettingsStore = SettingsStore()
 
         # ---- 当前 prediction（A 键结果，供 Q 流程一对一匹配）----
-        self._current_prediction = None       # PredictionResult
+        self._current_prediction: PredictionResult | None = None       # PredictionResult
 
         # ---- Q 原子 Commit 状态 ----
-        self._commit_snapshot = None          # _CommitSnapshot（Q 流程进行中持有）
-        self._inpaint_worker = None           # _InpaintWorker（Q 后台推理线程）
+        self._commit_snapshot: _CommitSnapshot | None = None          # _CommitSnapshot（Q 流程进行中持有）
+        self._inpaint_worker: _InpaintWorker | None = None           # _InpaintWorker（Q 后台推理线程）
 
         # ---- 启动期异步模型加载状态（GPU-only）----
-        self._model_load_worker = None        # _ModelLoadWorker（后台加载 ONNX）
-        self._model_load_failed = False       # 模型后台加载最终失败标记
+        self._model_load_worker: _ModelLoadWorker | None = None        # _ModelLoadWorker（后台加载 ONNX）
+        self._model_load_failed: bool = False       # 模型后台加载最终失败标记
 
         # ---- TestOne 异步推理状态（P1-2）----
-        # _test_one_pending 持有 (base_qimg, prediction_result, debug_result) 供 callback 使用
-        self._test_one_worker = None          # _InpaintWorker（TestOne 后台推理）
-        self._test_one_pending = None         # (base_qimg, result, debug_result) or None
+        # _test_one_pending 持有 (base_qimg, prediction_result) 供 callback 使用
+        self._test_one_worker: _InpaintWorker | None = None          # _InpaintWorker（TestOne 后台推理）
+        self._test_one_pending: tuple[QImage, PredictionResult] | None = None         # (base_qimg, result) or None
 
         # ---- 信号连接 ----
         self._connect_signals()
@@ -195,7 +205,7 @@ class LamaController(QObject):
         self._start_model_load()
 
     # ================================================================ 共享日志
-    def _log(self, text):
+    def _log(self, text: str) -> None:
         """写应用级共享日志（带 [LaMa] 前缀）。
 
         只在关键事件写：模型加载 / ORT providers / Open / SetRef / TestOne /
@@ -205,7 +215,7 @@ class LamaController(QObject):
         self._log_sink(f"[LaMa] {text}")
 
     # ================================================================ Worker 生命周期（P1-4）
-    def cleanup_worker(self):
+    def cleanup_worker(self) -> None:
         """窗口关闭 / Page 销毁前调用：等待或终止仍运行的后台 worker。
 
         防止 "QThread: Destroyed while thread is still running" 警告。
@@ -230,7 +240,7 @@ class LamaController(QObject):
             self._cleanup_running_worker(w)
 
     @staticmethod
-    def _cleanup_running_worker(w: _InpaintWorker):
+    def _cleanup_running_worker(w: _InpaintWorker) -> None:
         """等待 / 终止单个 worker 并 deleteLater。"""
         if w is None:
             return
@@ -247,7 +257,7 @@ class LamaController(QObject):
             pass
 
     # ================================================================ 信号连接
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
         p = self._page
         p.openRequested.connect(self._on_open)
         p.clearMaskRequested.connect(self._on_clear_mask)
@@ -271,7 +281,7 @@ class LamaController(QObject):
             return saved
         return ""
 
-    def _save_last_image_dir(self, image_path: str):
+    def _save_last_image_dir(self, image_path: str) -> None:
         """把所选图片的父目录持久化到 SettingsStore（key: lama/last_image_dir）。
 
         用户取消 QFileDialog 时不要调用本方法。必须 sync() 才落盘，
@@ -286,7 +296,7 @@ class LamaController(QObject):
             pass
 
     # ================================================================ Phase 1: Open / Prev / Next / ClearMask
-    def _on_open(self):
+    def _on_open(self) -> None:
         """打开单张图片：自动加载同目录所有图片并按名称排序。"""
         if self._busy:
             self._page.set_status_text("Busy，请等待 Q 完成")
@@ -338,7 +348,7 @@ class LamaController(QObject):
             f"({Path(self._image_files[self._current_index]).name}) | rolling reference 已重置"
         )
 
-    def _on_clear_mask(self):
+    def _on_clear_mask(self) -> None:
         """清空当前 mask。"""
         if self._busy:
             return
@@ -347,7 +357,7 @@ class LamaController(QObject):
         self._current_prediction = None
         self._refresh_status()
 
-    def _on_prev(self):
+    def _on_prev(self) -> None:
         """切到上一张（不再循环）。"""
         if self._busy:
             return
@@ -361,7 +371,7 @@ class LamaController(QObject):
         self._load_current_image()
         self._refresh_status()
 
-    def _on_next(self):
+    def _on_next(self) -> None:
         """切到下一张（不再循环，最后一张 Q 后停留此处）。"""
         if self._busy:
             return
@@ -376,12 +386,12 @@ class LamaController(QObject):
         self._load_current_image()
         self._refresh_status()
 
-    def _on_brush_changed(self, radius: int):
+    def _on_brush_changed(self, radius: int) -> None:
         """画笔半径变化，更新状态。"""
         self._page.set_status_text(f"Brush={radius}")
 
     # ---- Phase 1 内部辅助 ----
-    def _load_current_image(self):
+    def _load_current_image(self) -> None:
         """加载 self._current_index 指向的图片到 canvas。"""
         if not self._image_files or self._current_index < 0:
             return
@@ -394,7 +404,7 @@ class LamaController(QObject):
             )
 
     # ================================================================ 模型加载（GPU-only 固定路径，异步）
-    def _start_model_load(self):
+    def _start_model_load(self) -> None:
         """启动后台模型加载（GPU-only，固定模型路径，异步非阻塞 GUI）。
 
         唯一模型路径：<本文件所在目录>/models/lama_fp32.onnx
@@ -413,7 +423,7 @@ class LamaController(QObject):
         self._model_load_worker.finished_with_result.connect(self._on_model_loaded)
         self._model_load_worker.start()
 
-    def _on_model_loaded(self, success: bool, model_path: str, error: str):
+    def _on_model_loaded(self, success: bool, model_path: str, error: str) -> None:
         """模型后台加载完成回调（主线程，由 worker 信号触发）。
 
         无论成功失败都清理 worker，并在 GUI 日志显示真实结果。
@@ -434,7 +444,7 @@ class LamaController(QObject):
             self._log(f"模型加载失败: {error if error else '(未知错误)'}")
             self._log_ort_providers()
 
-    def _check_lama_model(self) -> tuple:
+    def _check_lama_model(self) -> tuple[str, str]:
         """检查 LaMa 模型当前状态，供 Q / TestOne 在真正需要推理前调用。
 
         返回 (state, message):
@@ -451,7 +461,7 @@ class LamaController(QObject):
         # 理论不应发生（启动时即进入 loading）：兜底视为加载中
         return ("loading", "LaMa 模型正在后台加载，请稍候。")
 
-    def _log_ort_providers(self):
+    def _log_ort_providers(self) -> None:
         """记录 ORT available / active providers（只读诊断信息）。"""
         available = self._lama_inference_service.available_providers()
         active = self._lama_inference_service.active_providers()
@@ -459,7 +469,7 @@ class LamaController(QObject):
         self._log(f"ORT active providers: {active if active else '(none)'}")
 
     # ================================================================ Phase 4: SetRef / A / TestOne
-    def _on_set_ref(self):
+    def _on_set_ref(self) -> None:
         """SetRef：将当前图 + 最终 mask 设为基准（rolling reference 入口 1/2）。
 
         与 C++ MainWindow::onSetAsReference 一致：
@@ -522,7 +532,7 @@ class LamaController(QObject):
             f"canonical points={len(centers)}"
         )
 
-    def _on_assist_mask(self):
+    def _on_assist_mask(self) -> None:
         """A 键：基于基准预测 mask 草稿（mode="assist"）。
 
         与 C++ MainWindow::onAssistMask 一致：
@@ -573,7 +583,7 @@ class LamaController(QObject):
                 f"AssistMask: predicted {result.success}/{result.total}"
             )
 
-    def _on_test_one(self):
+    def _on_test_one(self) -> None:
         """TestOne：测试基准追踪效果（不保存、不修改 reference、不切图）。
 
         P1-1 修订：主预测必须与 A 同样使用 predict(mode="assist")，因为 TestOne
@@ -669,7 +679,7 @@ class LamaController(QObject):
         # ---- 模型未就绪：直接显示 base preview ----
         self._show_test_one_preview_dialog(base_qimg, result, None)
 
-    def _on_test_one_inpaint_done(self, result_arr: np.ndarray):
+    def _on_test_one_inpaint_done(self, result_arr: np.ndarray) -> None:
         """TestOne 后台推理完成回调（P1-2）。
 
         在主线程执行，由 worker 信号触发。从 _test_one_pending 取出 base_qimg + prediction，
@@ -727,7 +737,7 @@ class LamaController(QObject):
 
     def _show_test_one_preview_dialog(self, base_qimg: QImage,
                                        result: PredictionResult,
-                                       inpainted: np.ndarray = None):
+                                       inpainted: np.ndarray | None = None) -> None:
         """弹出 TestOne 预览窗：base + （可选）擦除结果对比。"""
         dlg = QDialog(self._page)
         dlg.setWindowTitle(f"TestOne: {result.success}/{result.total} ok")
@@ -751,7 +761,7 @@ class LamaController(QObject):
         dlg.exec()
 
     # ================================================================ Phase 6: Q 原子 Commit 状态机
-    def _on_commit(self):
+    def _on_commit(self) -> None:
         """Q 键：原子 Commit 状态机（与 C++ MainWindow::onQuickInpaint 一致）。
 
         真正原子提交流程（P0-3）：
@@ -921,7 +931,7 @@ class LamaController(QObject):
         self._inpaint_worker.finished_with_result.connect(self._on_inpaint_done)
         self._inpaint_worker.start()
 
-    def _on_inpaint_done(self, result: np.ndarray):
+    def _on_inpaint_done(self, result: np.ndarray) -> None:
         """LaMa 推理完成回调（在主线程执行，由 worker 信号触发）。
 
         真正原子提交（P0-3）：
@@ -1062,7 +1072,7 @@ class LamaController(QObject):
         self._on_next()
 
     @staticmethod
-    def _cleanup_tmp(*paths):
+    def _cleanup_tmp(*paths: str) -> None:
         """清理临时文件。"""
         for p in paths:
             try:
@@ -1071,7 +1081,7 @@ class LamaController(QObject):
             except OSError:
                 pass
 
-    def _on_help(self):
+    def _on_help(self) -> None:
         """显示帮助说明。"""
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.information(
@@ -1155,7 +1165,7 @@ class LamaController(QObject):
         return img.copy()
 
     # ================================================================ 内部：current_prediction 访问
-    def _get_predicted_centers(self) -> dict:
+    def _get_predicted_centers(self) -> dict[int, tuple[float, float]]:
         """从 current_prediction 提取 {track_id: (cx, cy)}（P0-2 修订）。
 
         规则：
@@ -1172,7 +1182,7 @@ class LamaController(QObject):
         return centers
 
     # ================================================================ 状态显示
-    def _refresh_status(self):
+    def _refresh_status(self) -> None:
         """刷新 Page 的永久状态栏。"""
         n = len(self._image_files)
         if n <= 0 or self._current_index < 0:

@@ -8,6 +8,8 @@ YJJ RGBD Pose 实验桌面 GUI 启动入口 (PySide6)
     python YJJ_Pose_Scripts/gui/pose_training_gui.py
 """
 
+from __future__ import annotations
+
 import sys
 
 from PySide6.QtGui import QColor, QPalette
@@ -16,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 from main_window import MainWindow
 
 
-def apply_dark_theme(app: QApplication):
+def apply_dark_theme(app: QApplication) -> None:
     """应用全局深色主题。"""
     app.setStyle("Fusion")
 
@@ -46,7 +48,7 @@ def apply_dark_theme(app: QApplication):
     app.setPalette(palette)
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
 
     apply_dark_theme(app)

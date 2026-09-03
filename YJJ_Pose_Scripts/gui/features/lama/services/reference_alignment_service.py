@@ -22,10 +22,12 @@
 
 参数对齐 C++ AlignToReference::Params 默认值（MainWindow::makeAlignParams）。
 """
+
+from __future__ import annotations
 import copy
+
 from dataclasses import dataclass, field
 from itertools import permutations
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -35,32 +37,32 @@ import numpy as np
 @dataclass
 class LocalTrack:
     """单个独立 Mask 的局部追踪信息（对应 C++ AlignToReference::LocalTrack）。"""
-    id: int                                  # canonical Track 编号（0..N-1，由 ordered_points 一对一匹配继承）
-    mask_rect: tuple                         # 参考图非零包围盒 (x, y, w, h)
-    template_rect: tuple                     # 扩边后模板区域 (x, y, w, h)
-    mask_patch: np.ndarray = None            # 二值 Mask 补丁（CV_8UC1 0/255）
-    template_gray: np.ndarray = None         # 参考灰度模板
-    ref_center: tuple = (0.0, 0.0)           # mask 中心（参考图坐标）
+    id: int                                       # canonical Track 编号（0..N-1，由 ordered_points 一对一匹配继承）
+    mask_rect: tuple[int, int, int, int]          # 参考图非零包围盒 (x, y, w, h)
+    template_rect: tuple[int, int, int, int]      # 扩边后模板区域 (x, y, w, h)
+    mask_patch: np.ndarray | None = None          # 二值 Mask 补丁（CV_8UC1 0/255）
+    template_gray: np.ndarray | None = None       # 参考灰度模板
+    ref_center: tuple[float, float] = (0.0, 0.0)  # mask 中心（参考图坐标）
 
 
 @dataclass
 class TrackPrediction:
     """单个 Track 在目标图的匹配结果（对应 C++ LocalMatchResult 的精简版）。"""
-    id: int                                  # canonical Track 编号（与 LocalTrack.id 一致）
-    ref_center: tuple = (0.0, 0.0)           # 参考图 mask 中心
-    current_center: tuple = (0.0, 0.0)       # 目标图 mask 中心 = ref_center + (dx, dy)，与 assist mask 一致
-    dx: int = 0                              # X 位移
-    dy: int = 0                              # Y 位移
-    score: float = 0.0                       # 匹配分数
-    ok: bool = False                         # 是否成功
-    fail_reason: str = ""                    # 失败原因
+    id: int                                       # canonical Track 编号（与 LocalTrack.id 一致）
+    ref_center: tuple[float, float] = (0.0, 0.0)  # 参考图 mask 中心
+    current_center: tuple[float, float] = (0.0, 0.0)  # 目标图 mask 中心 = ref_center + (dx, dy)，与 assist mask 一致
+    dx: int = 0                                   # X 位移
+    dy: int = 0                                   # Y 位移
+    score: float = 0.0                            # 匹配分数
+    ok: bool = False                              # 是否成功
+    fail_reason: str = ""                         # 失败原因
 
 
 @dataclass
 class PredictionResult:
     """predict() 统一返回（A 与 TestOne 共用）。"""
-    mask: Optional[np.ndarray]               # 最终 mask（HxW uint8 0/255），None 表示失败
-    tracks: list = field(default_factory=list)  # list[TrackPrediction]
+    mask: np.ndarray | None                       # 最终 mask（HxW uint8 0/255），None 表示失败
+    tracks: list[TrackPrediction] = field(default_factory=list)  # list[TrackPrediction]
     success: int = 0
     total: int = 0
     global_dx: int = 0
@@ -74,11 +76,11 @@ class _PreparedReference:
     由 prepare_reference() 生成，apply_prepared_reference() 消费。
     不可被外部直接构造。
     """
-    ref_gray: np.ndarray                     # 参考灰度图（已 copy）
-    ref_mask: np.ndarray                      # 参考 mask（已 copy）
-    ref_points: list                          # ordered_points（已 copy）
-    ref_rect: object                          # 参考 BoundingBox（可选）
-    local_tracks: list                       # list[LocalTrack]，ID 已是 canonical
+    ref_gray: np.ndarray                          # 参考灰度图（已 copy）
+    ref_mask: np.ndarray                          # 参考 mask（已 copy）
+    ref_points: list[tuple[float, float]]         # ordered_points（已 copy）
+    ref_rect: object                             # 参考 BoundingBox（可选）
+    local_tracks: list[LocalTrack]                # list[LocalTrack]，ID 已是 canonical
     ready: bool = True
 
 
@@ -122,36 +124,36 @@ class ReferenceAlignmentService:
                  max_local_deviation_x: int = DEFAULT_MAX_LOCAL_DEVIATION_X,
                  max_local_deviation_y: int = DEFAULT_MAX_LOCAL_DEVIATION_Y,
                  min_track_center_distance: int = DEFAULT_MIN_TRACK_CENTER_DISTANCE,
-                 ):
-        self.local_template_padding = local_template_padding
-        self.search_radius_x = search_radius_x
-        self.search_radius_y = search_radius_y
-        self.min_local_score = min_local_score
-        self.min_mask_component_area = min_mask_component_area
-        self.dilate_r = dilate_r
-        self.assist_mask_radius = assist_mask_radius
-        self.refine_radius_x = refine_radius_x
-        self.refine_radius_y = refine_radius_y
-        self.max_local_deviation_x = max_local_deviation_x
-        self.max_local_deviation_y = max_local_deviation_y
-        self.min_track_center_distance = min_track_center_distance
+                 ) -> None:
+        self.local_template_padding: int = local_template_padding
+        self.search_radius_x: int = search_radius_x
+        self.search_radius_y: int = search_radius_y
+        self.min_local_score: float = min_local_score
+        self.min_mask_component_area: int = min_mask_component_area
+        self.dilate_r: int = dilate_r
+        self.assist_mask_radius: int = assist_mask_radius
+        self.refine_radius_x: int = refine_radius_x
+        self.refine_radius_y: int = refine_radius_y
+        self.max_local_deviation_x: int = max_local_deviation_x
+        self.max_local_deviation_y: int = max_local_deviation_y
+        self.min_track_center_distance: int = min_track_center_distance
 
         # ---- 内部状态 ----
-        self._ready = False
-        self._ref_gray_a = None             # 参考灰度图（CV_8UC1）
-        self._ref_mask_a = None             # 参考 mask（CV_8UC1 0/255）
-        self._ref_points_a = []             # canonical ordered_points [(x, y), ...]
-        self._ref_rect_a = None             # 参考 BoundingBox（可选）
-        self._local_tracks = []             # list[LocalTrack]，id 已是 canonical
+        self._ready: bool = False
+        self._ref_gray_a: np.ndarray | None = None             # 参考灰度图（CV_8UC1）
+        self._ref_mask_a: np.ndarray | None = None             # 参考 mask（CV_8UC1 0/255）
+        self._ref_points_a: list[tuple[float, float]] = []     # canonical ordered_points [(x, y), ...]
+        self._ref_rect_a: object | None = None                 # 参考 BoundingBox（可选）
+        self._local_tracks: list[LocalTrack] = []              # list[LocalTrack]，id 已是 canonical
 
     # ============================================================ 公开 API
     def is_ready(self) -> bool:
         return self._ready
 
-    def local_tracks(self) -> list:
+    def local_tracks(self) -> list[LocalTrack]:
         return self._local_tracks
 
-    def reference_points(self) -> list:
+    def reference_points(self) -> list[tuple[float, float]]:
         """返回当前 Reference 的 canonical ordered points 副本。
 
         index 0..6 = stable ID 0..6，与 SetRef/rolling ref 建立的 canonical 顺序一致。
@@ -162,8 +164,8 @@ class ReferenceAlignmentService:
     def prepare_reference(self,
                           ref_rgb: np.ndarray,
                           ref_mask_gray: np.ndarray,
-                          ordered_points: list = None,
-                          ref_rect: tuple = None) -> Optional[_PreparedReference]:
+                          ordered_points: list[tuple[float, float]] | None = None,
+                          ref_rect: object | None = None) -> _PreparedReference | None:
         """预构建并验证新的 Reference State，但不修改当前状态（供 Q 原子 Commit 使用）。
 
         与 set_reference 算法一致，但只返回 _PreparedReference 或 None，
@@ -245,8 +247,8 @@ class ReferenceAlignmentService:
     def set_reference(self,
                       ref_rgb: np.ndarray,
                       ref_mask_gray: np.ndarray,
-                      ordered_points: list = None,
-                      ref_rect: tuple = None) -> bool:
+                      ordered_points: list[tuple[float, float]] | None = None,
+                      ref_rect: object | None = None) -> bool:
         """设置基准图与 mask，构建 local tracks（prepare + apply 的便捷封装）。
 
         算法：
@@ -342,7 +344,7 @@ class ReferenceAlignmentService:
     # ============================================================ 静态工具
     @staticmethod
     def extract_mask_centers(mask_gray8: np.ndarray,
-                             min_component_area: int = 50) -> list:
+                             min_component_area: int = 50) -> list[tuple[float, float]]:
         """从最终 Mask 重新提取 Component 中心（Q 流程唯一真相来源）。
 
         与 C++ AlignToReference::ExtractMaskCenters 一致：
@@ -372,7 +374,7 @@ class ReferenceAlignmentService:
 
     # ============================================================ 内部：构建 local tracks
     def _build_local_tracks_into(self, ref_gray: np.ndarray,
-                                  ref_mask: np.ndarray) -> list:
+                                  ref_mask: np.ndarray) -> list[LocalTrack]:
         """拆分 components + 生成模板（与 C++ BuildLocalTracks 一致），不赋 ID。
 
         返回 list[LocalTrack]，每个 track.id 临时为 -1（待 _assign_canonical_ids_* 赋值）。
@@ -435,8 +437,8 @@ class ReferenceAlignmentService:
         return tracks
 
     def _assign_canonical_ids_by_match(self,
-                                        tracks: list,
-                                        ordered_points: list) -> Optional[list]:
+                                        tracks: list[LocalTrack],
+                                        ordered_points: list[tuple[float, float]]) -> list[LocalTrack] | None:
         """一对一最小距离 assignment：每个 ordered_points[i] 匹配唯一一个 track，
         track 继承 canonical ID = i。
 
@@ -484,7 +486,7 @@ class ReferenceAlignmentService:
             )
         return out
 
-    def _assign_canonical_ids_by_yx(self, tracks: list) -> list:
+    def _assign_canonical_ids_by_yx(self, tracks: list[LocalTrack]) -> list[LocalTrack]:
         """退化路径：没有 ordered_points 时按 (y, x) 升序赋 ID 0..N-1。
 
         仅用于首次 SetRef 兜底（Controller 正常路径总会传 ordered_points）。
@@ -505,7 +507,7 @@ class ReferenceAlignmentService:
         return out
 
     # ============================================================ 内部：两阶段匹配
-    def _run_two_stage_match(self, gray_b: np.ndarray, img_size: tuple):
+    def _run_two_stage_match(self, gray_b: np.ndarray, img_size: tuple[int, int]) -> tuple[list[TrackPrediction], int, int]:
         """两阶段匹配：Coarse -> 全局中位数 -> Refined -> 校验 -> 重复检测。
 
         与 C++ RunTwoStageMatch 一致。
@@ -575,7 +577,7 @@ class ReferenceAlignmentService:
         return tracks, gdx, gdy
 
     def _coarse_match_track(self, track: LocalTrack, gray_b: np.ndarray,
-                            img_size: tuple, out: TrackPrediction):
+                            img_size: tuple[int, int], out: TrackPrediction) -> tuple[bool, int, int, float]:
         """第一阶段粗匹配（与 C++ CoarseMatchTrack 一致）。
 
         返回 (ok, dx, dy, score)；只更新 out 的 coarse_* 字段（这里简化为只返回值）。
@@ -616,7 +618,7 @@ class ReferenceAlignmentService:
         return True, dx, dy, float(max_val)
 
     def _refined_match_track(self, track: LocalTrack, gray_b: np.ndarray,
-                             img_size: tuple, gdx: int, gdy: int,
+                             img_size: tuple[int, int], gdx: int, gdy: int,
                              out: TrackPrediction) -> bool:
         """第二阶段精匹配（与 C++ RefinedMatchTrack 一致）。"""
         w, h = img_size
@@ -653,7 +655,7 @@ class ReferenceAlignmentService:
         return True
 
     # ============================================================ 内部：合成 mask
-    def _compose_final_mask(self, tracks: list, use: list,
+    def _compose_final_mask(self, tracks: list[TrackPrediction], use: list[bool],
                             h: int, w: int) -> np.ndarray:
         """合并 use[i]=True 的 track maskPatch 到 finalMask（与 C++ ComposeFinalMask 一致）。"""
         final = np.zeros((h, w), dtype=np.uint8)
@@ -669,7 +671,7 @@ class ReferenceAlignmentService:
 
     @staticmethod
     def _paste_mask_patch(final_mask: np.ndarray, patch: np.ndarray,
-                          dst_x: int, dst_y: int):
+                          dst_x: int, dst_y: int) -> None:
         """单个 mask 补丁合并到 finalMask（边界裁剪 + bitwise OR）。"""
         if patch is None or final_mask is None:
             return
@@ -732,7 +734,7 @@ class ReferenceAlignmentService:
         return ReferenceAlignmentService._to_gray_mask_u8(mask_gray)
 
     @staticmethod
-    def _median_int(values: list) -> int:
+    def _median_int(values: list[int]) -> int:
         """计算中位数（与 C++ MedianInt 一致）。"""
         if not values:
             return 0

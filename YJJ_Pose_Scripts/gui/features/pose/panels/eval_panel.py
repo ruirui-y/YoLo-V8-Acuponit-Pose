@@ -3,6 +3,10 @@
 Panel 只负责控件创建 / 展示 / 发信号；按钮 clicked 连接到自己的 signal，
 Controller 连接这些 signal 并处理业务逻辑。
 """
+from __future__ import annotations
+
+from typing import Any, Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
@@ -21,17 +25,21 @@ class EvalPanel(QWidget):
     rgbdWeightChanged = Signal()            # RGBD best.pt 路径变更
     settingsDirty = Signal()                # 路径有变动，请求保存 QSettings
 
-    def __init__(self, parent=None, start_dir_provider=None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        start_dir_provider: Callable[[QLineEdit], str] | None = None,
+    ) -> None:
         super().__init__(parent)
         # browse 起始目录 QSettings fallback 提供者（由 Controller 注入，可空）
-        self._start_dir_provider = start_dir_provider
+        self._start_dir_provider: Callable[[QLineEdit], str] | None = start_dir_provider
         self._build_ui()
 
-    def set_start_dir_provider(self, provider):
+    def set_start_dir_provider(self, provider: Callable[[QLineEdit], str] | None) -> None:
         """供 Controller 在构造完成后注入 QSettings fallback 路径查询回调。"""
         self._start_dir_provider = provider
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         gt = QGroupBox("测试结果")
         ft = QFormLayout(gt)
 
@@ -91,7 +99,7 @@ class EvalPanel(QWidget):
         ft.addRow(heval)
 
         # ---- 指标展示块（split=test）----
-        self.eval_lbl = {"rgb": {}, "rgbd": {}}
+        self.eval_lbl: dict[str, dict[str, dict[str, QLabel]]] = {"rgb": {}, "rgbd": {}}
         self.eval_lbl["rgb"]["box"] = self._add_metric_block(ft, "RGB Box (split=test)")
         self.eval_lbl["rgb"]["pose"] = self._add_metric_block(ft, "RGB Pose (split=test)")
         self.eval_lbl["rgbd"]["box"] = self._add_metric_block(ft, "RGBD Box (split=test)")
@@ -107,7 +115,7 @@ class EvalPanel(QWidget):
         v.addWidget(gt)
 
     # ---- 内部：浏览对话框 ----
-    def _make_browse_row(self, le, is_dir=False, filt="All (*)"):
+    def _make_browse_row(self, le: QLineEdit, is_dir: bool = False, filt: str = "All (*)") -> QWidget:
         """创建 QLineEdit + "选择..." 按钮的组合控件。"""
         w = QWidget()
         h = QHBoxLayout(w)
@@ -118,7 +126,7 @@ class EvalPanel(QWidget):
         h.addWidget(b)
         return w
 
-    def _resolve_start(self, le):
+    def _resolve_start(self, le: QLineEdit) -> str:
         """文件/目录对话框起始目录优先级：当前输入框 > QSettings 上次 > 项目根。"""
         cur = le.text().strip()
         if cur:
@@ -129,7 +137,7 @@ class EvalPanel(QWidget):
                 return v
         return str(_REPO_ROOT)
 
-    def _browse(self, le, is_dir, filt):
+    def _browse(self, le: QLineEdit, is_dir: bool, filt: str) -> None:
         """打开文件/目录对话框并设置文本。"""
         start = self._resolve_start(le)
         if is_dir:
@@ -140,11 +148,11 @@ class EvalPanel(QWidget):
             le.setText(p)
             self.settingsDirty.emit()
 
-    def _add_metric_block(self, parent, title):
+    def _add_metric_block(self, parent: QFormLayout, title: str) -> dict[str, QLabel]:
         """在 parent(QFormLayout) 下新增一个指标分组，返回 {"p","r","map50","map"} 四个 QLabel。"""
         gb = QGroupBox(title)
         f = QFormLayout(gb)
-        lbl = {}
+        lbl: dict[str, QLabel] = {}
         for key, disp in (("p", "P"), ("r", "R"), ("map50", "mAP50"), ("map", "mAP50-95")):
             l = QLabel("-")
             lbl[key] = l
@@ -153,7 +161,7 @@ class EvalPanel(QWidget):
         return lbl
 
     # ---- 公开：展示方法 ----
-    def display_result(self, leg, res):
+    def display_result(self, leg: str, res: dict[str, Any]) -> None:
         """写回单个 leg（rgb/rgbd）的 Box/Pose 8 项指标。"""
         blk = self.eval_lbl[leg]
         blk["box"]["p"].setText(f"{res['box_p']:.4f}")
@@ -165,14 +173,14 @@ class EvalPanel(QWidget):
         blk["pose"]["map50"].setText(f"{res['pose_map50']:.4f}")
         blk["pose"]["map"].setText(f"{res['pose_map']:.4f}")
 
-    def display_compare(self, r, d, db_box, db_pose):
+    def display_compare(self, r: dict[str, Any], d: dict[str, Any], db_box: float, db_pose: float) -> None:
         """写回对比结果：差值 = RGBD - RGB。"""
         self.lbl_cmp_box.setText(
             f"RGB={r['box_map']:.4f}  RGBD={d['box_map']:.4f}  差值(RGBD-RGB)={db_box:+.4f}")
         self.lbl_cmp_pose.setText(
             f"RGB={r['pose_map']:.4f}  RGBD={d['pose_map']:.4f}  差值(RGBD-RGB)={db_pose:+.4f}")
 
-    def clear_results(self):
+    def clear_results(self) -> None:
         """清空所有指标展示。"""
         for leg in ("rgb", "rgbd"):
             for kind in ("box", "pose"):
@@ -181,7 +189,7 @@ class EvalPanel(QWidget):
         self.lbl_cmp_box.setText("-")
         self.lbl_cmp_pose.setText("-")
 
-    def set_test_info(self, info):
+    def set_test_info(self, info: dict[str, Any]) -> None:
         """写回"当前测试数据"只读区（split 固定 test）。"""
         self.lbl_rgb_test_yaml.setText(info.get("rgb_yaml") or "-")
         self.lbl_rgb_test_img.setText(info.get("rgb_img") or "-")
@@ -194,12 +202,12 @@ class EvalPanel(QWidget):
         self.lbl_split.setText(info.get("split") or "test（固定）")
         self.lbl_id_consistency.setText(info.get("id_text") or "-")
 
-    def set_ablate_info(self, info):
+    def set_ablate_info(self, info: dict[str, Any]) -> None:
         """写回"Depth 消融测试"只读信息。"""
         self.lbl_ablate_yaml.setText(info.get("rgbd_yaml") or "-")
         self.lbl_ablate_pt.setText(info.get("rgbd_pt") or "-")
 
-    def set_operation_buttons_enabled(self, enabled):
+    def set_operation_buttons_enabled(self, enabled: bool) -> None:
         """供 Controller 在任务运行期间控制评估/消融按钮启停。"""
         self.btn_eval_rgb.setEnabled(enabled)
         self.btn_eval_rgbd.setEnabled(enabled)
