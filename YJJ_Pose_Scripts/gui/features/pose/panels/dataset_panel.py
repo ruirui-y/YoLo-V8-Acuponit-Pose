@@ -27,6 +27,30 @@ from PySide6.QtWidgets import (
 from gui_config import _REPO_ROOT
 
 
+def resolve_browse_start(cur_text: str,
+                         field_last_dir: str | None,
+                         global_last_dir: str | None,
+                         fallback: str) -> str:
+    """Browse 起始目录优先级（纯逻辑，可单测）：
+
+    1. 当前输入框已有合法路径：目录 -> 该目录；文件 -> 其 parent
+    2. 该字段上次 browse 目录（QSettings '<field>_last_dir'）
+    3. 全局上次 browse 目录
+    4. 全部为空 -> fallback（项目根目录）
+    """
+    if cur_text:
+        p = Path(cur_text)
+        if p.is_dir():
+            return str(p)
+        if p.is_file():
+            return str(p.parent)
+    if field_last_dir:
+        return field_last_dir
+    if global_last_dir:
+        return global_last_dir
+    return fallback
+
+
 class DatasetPanel(QWidget):
     # ---- 对外信号 ----
     modeChanged = Signal()                  # 数据集来源模式切换
@@ -34,6 +58,9 @@ class DatasetPanel(QWidget):
     prepareRequested = Signal()             # 点击"准备数据集"
     rgbdVariantChanged = Signal(str)        # RGBD 变体下拉切换
     settingsDirty = Signal()                # 路径有变动，请求保存 QSettings
+    crossValidateRequested = Signal()       # Cross-subject：Validate
+    crossRebuildRequested = Signal()        # Cross-subject：Rebuild Test Set
+    browsePathChosen = Signal(object, str)  # (QLineEdit, 选中路径) 供 Controller 记忆目录
 
     def __init__(
         self,
@@ -148,9 +175,99 @@ class DatasetPanel(QWidget):
 
         v = QVBoxLayout(self)
         v.addWidget(g)
+        self._build_cross_ui(v)
 
         # 初始应用模式状态
         self._apply_mode_state()
+
+    def _build_cross_ui(self, parent_layout: QVBoxLayout) -> None:
+        """Cross-subject Test Set：用外部受试者重建 test，train/val 原样沿用当前数据集。"""
+        gx = QGroupBox("Cross-subject Test Set")
+        fx = QFormLayout(gx)
+
+        # ---- 输入 ----
+        self.le_x_img = QLineEdit()
+        self.le_x_label = QLineEdit()
+        self.le_x_npy = QLineEdit()
+        self.row_x_img = self._make_browse_row(self.le_x_img, is_dir=True)
+        self.row_x_label = self._make_browse_row(self.le_x_label, is_dir=True)
+        self.row_x_npy = self._make_browse_row(self.le_x_npy, is_dir=True)
+        fx.addRow("External Images:", self.row_x_img)
+        fx.addRow("External Labels:", self.row_x_label)
+        fx.addRow("External Depth NPY:", self.row_x_npy)
+
+        self.le_x_name = QLineEdit("hand_cross_subject_v1")
+        fx.addRow("Output Dataset Name:", self.le_x_name)
+
+        self.le_x_template = QLineEdit()
+        self.row_x_template = self._make_browse_row(
+            self.le_x_template, is_dir=False, filt="Label (*.txt)")
+        fx.addRow("Canonical Template Label:", self.row_x_template)
+
+        self.btn_x_validate = QPushButton("Validate")
+        self.btn_x_validate.setToolTip("只读校验外部目录匹配、keypoint 数量与当前数据集一致性")
+        self.btn_x_validate.clicked.connect(self.crossValidateRequested.emit)
+        fx.addRow(self.btn_x_validate)
+
+        # ---- 校验摘要 ----
+        self.lbl_x_images = QLabel("-")
+        self.lbl_x_labels = QLabel("-")
+        self.lbl_x_depth = QLabel("-")
+        self.lbl_x_matched = QLabel("-")
+        self.lbl_x_kpt = QLabel("-")
+        self.lbl_x_status = QLabel("尚未 Validate")
+        fx.addRow("Images:", self.lbl_x_images)
+        fx.addRow("Labels:", self.lbl_x_labels)
+        fx.addRow("Depth:", self.lbl_x_depth)
+        fx.addRow("Matched:", self.lbl_x_matched)
+        fx.addRow("Keypoints:", self.lbl_x_kpt)
+        fx.addRow("Status:", self.lbl_x_status)
+
+        self.btn_x_rebuild = QPushButton("Rebuild Test Set")
+        self.btn_x_rebuild.setEnabled(False)
+        self.btn_x_rebuild.setToolTip("Validate 通过后可用：staging 完整生成校验通过后发布到 dataset/<name>")
+        self.btn_x_rebuild.clicked.connect(self.crossRebuildRequested.emit)
+        fx.addRow(self.btn_x_rebuild)
+
+        self._cross_busy = False
+        self._cross_rebuild_ok = False
+        parent_layout.addWidget(gx)
+
+    # ---- Cross-subject：展示 / 启停（供 Controller 调用）----
+    def reset_cross_summary(self) -> None:
+        """清空 cross-subject 摘要并禁用 Rebuild（数据集/模式变化后调用）。"""
+        for lbl in (self.lbl_x_images, self.lbl_x_labels, self.lbl_x_depth,
+                    self.lbl_x_matched, self.lbl_x_kpt):
+            lbl.setText("-")
+        self.lbl_x_status.setText("尚未 Validate")
+        self._cross_rebuild_ok = False
+        self.btn_x_rebuild.setEnabled(False)
+
+    def set_cross_summary(self, d: dict[str, Any]) -> None:
+        """写回 Validate / Rebuild 结果摘要（None 显示"-"）。"""
+        def _t(key: str) -> str:
+            v = d.get(key)
+            return str(v) if v is not None else "-"
+        self.lbl_x_images.setText(_t("images"))
+        self.lbl_x_labels.setText(_t("labels"))
+        self.lbl_x_depth.setText(_t("depth"))
+        self.lbl_x_matched.setText(_t("matched"))
+        self.lbl_x_kpt.setText(_t("keypoints"))
+
+    def set_cross_status(self, text: str) -> None:
+        self.lbl_x_status.setText(text)
+
+    def set_cross_rebuild_ok(self, ok: bool) -> None:
+        """Validate 通过 -> True 启用 Rebuild；失败/已发布 -> False。"""
+        self._cross_rebuild_ok = bool(ok)
+        self.btn_x_rebuild.setEnabled(bool(ok) and not self._cross_busy)
+
+    def set_cross_busy(self, busy: bool) -> None:
+        """cross-subject 任务运行期间禁用 Validate/Rebuild（busy 结束后按状态还原）。"""
+        self._cross_busy = bool(busy)
+        self.btn_x_validate.setEnabled(not busy)
+        self.btn_x_rebuild.setEnabled(
+            (not busy) and self._cross_rebuild_ok)
 
     # ---- 内部：模式切换 ----
     def _on_mode_clicked(self) -> None:
@@ -183,10 +300,8 @@ class DatasetPanel(QWidget):
         return w
 
     def _resolve_start(self, le: QLineEdit) -> str:
-        """文件/目录对话框起始目录优先级：当前输入框 > QSettings 上次 > 项目根。"""
-        cur = le.text().strip()
-        if cur:
-            return cur
+        """起始目录：由注入的 provider 实现完整优先级（当前路径 > 字段 last > 全局 last），
+        空则回退项目根目录。"""
         if self._start_dir_provider is not None:
             v = self._start_dir_provider(le)
             if v:
@@ -194,7 +309,7 @@ class DatasetPanel(QWidget):
         return str(_REPO_ROOT)
 
     def _browse(self, le: QLineEdit, is_dir: bool, filt: str) -> None:
-        """打开文件/目录对话框并设置文本。"""
+        """打开文件/目录对话框并设置文本；成功后发出 browsePathChosen（记忆目录）与 settingsDirty。"""
         start = self._resolve_start(le)
         if is_dir:
             p = QFileDialog.getExistingDirectory(self, "选择目录", start)
@@ -202,6 +317,7 @@ class DatasetPanel(QWidget):
             p, _ = QFileDialog.getOpenFileName(self, "选择文件", start, filt)
         if p:
             le.setText(p)
+            self.browsePathChosen.emit(le, p)
             self.settingsDirty.emit()
 
     def _on_browse_existing(self) -> None:
@@ -210,6 +326,7 @@ class DatasetPanel(QWidget):
         p = QFileDialog.getExistingDirectory(self, "选择已有数据集根目录", start)
         if p:
             self.le_existing.setText(p)
+            self.browsePathChosen.emit(self.le_existing, p)
             self.settingsDirty.emit()
             self.existingDirChanged.emit()
 

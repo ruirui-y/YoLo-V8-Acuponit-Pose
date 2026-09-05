@@ -10,6 +10,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS = {
     "prepare": _REPO_ROOT / "YJJ_Pose_Scripts" / "01_data" / "prepare_pose_rgbd_dataset.py",
+    "cross_rebuild": _REPO_ROOT / "YJJ_Pose_Scripts" / "01_data" / "rebuild_cross_subject_testset.py",
     "train_rgb": _REPO_ROOT / "YJJ_Pose_Scripts" / "03_train" / "train_rgb_pose.py",
     "train_rgbd": _REPO_ROOT / "YJJ_Pose_Scripts" / "03_train" / "train_rgbd_pose.py",
     "build": _REPO_ROOT / "YJJ_Pose_Scripts" / "02_model" / "build_rgbd_pose_weights.py",

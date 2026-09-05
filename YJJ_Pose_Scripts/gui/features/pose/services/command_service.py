@@ -29,6 +29,33 @@ class CommandService:
         ]
 
     @staticmethod
+    def build_cross_command(
+        mode: str, base: str, name: str,
+        rgb: str, label: str, npy: str,
+        template: str,
+        audit_dir: str = "",
+    ) -> list[str]:
+        """构造 Cross-subject test set 子进程参数（mode: validate / rebuild）。
+
+        base: 当前数据集目录（含 rgb/ rgbd/，即“使用已有数据集”选中的目录）
+        template: Canonical Template Label 路径（定义 K0..K(N-1) 语义顺序）
+        audit_dir: validate 全量 audit CSV 输出目录（可空）
+        """
+        cmd = [
+            str(_SCRIPTS["cross_rebuild"]),
+            mode,
+            "--base", base,
+            "--name", name,
+            "--rgb-dir", rgb,
+            "--label-dir", label,
+            "--npy-dir", npy,
+            "--template", template,
+        ]
+        if audit_dir:
+            cmd += ["--audit-dir", audit_dir]
+        return cmd
+
+    @staticmethod
     def build_train_rgb_command(
         yaml: Path, fliplr: str, patience: str, weights: str,
     ) -> list[str]:

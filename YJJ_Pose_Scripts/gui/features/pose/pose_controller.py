@@ -15,13 +15,15 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 from gui_config import _DEFAULT_BASE_WEIGHT, _REPO_ROOT
 from core.process_runner import ProcessRunner
-from core.settings_store import SettingsStore, make_start_dir_provider
+from core.settings_store import SettingsStore
+from .panels.dataset_panel import resolve_browse_start
 from .services.dataset_service import DatasetService
 from .services.command_service import CommandService
 from .services.result_parser import ResultParser
@@ -72,6 +74,11 @@ class PoseController:
         self._last_eval_result: Any | None = None
         self._last_ablate_result: Any | None = None
 
+        # ---- Cross-subject test set 状态 ----
+        self._cross_validate_ok: bool = False     # Validate 通过后才允许 Rebuild
+        self._cross_json: dict[str, Any] | None = None
+        self._cross_block: str = ""
+
         # 路径 <-> QSettings key 映射
         self._settings_keys: dict[QLineEdit, str] = {
             self.dataset_panel.le_existing: "existing_dir",
@@ -81,6 +88,11 @@ class PoseController:
             self.dataset_panel.le_out: "out_dir",
             self.dataset_panel.le_low: "depth_low",
             self.dataset_panel.le_high: "depth_high",
+            self.dataset_panel.le_x_img: "cross_img_dir",
+            self.dataset_panel.le_x_label: "cross_label_dir",
+            self.dataset_panel.le_x_npy: "cross_npy_dir",
+            self.dataset_panel.le_x_name: "cross_name",
+            self.dataset_panel.le_x_template: "cross_template",
             self.train_panel.le_base: "base_path",
             self.train_panel.le_py: "py_path",
             self.eval_panel.le_eval_rgb: "eval_rgb_pt",
@@ -99,6 +111,9 @@ class PoseController:
         dp.prepareRequested.connect(self._on_prepare)
         dp.rgbdVariantChanged.connect(self._apply_rgbd_variant)
         dp.settingsDirty.connect(self._save_settings)
+        dp.crossValidateRequested.connect(self._on_cross_validate)
+        dp.crossRebuildRequested.connect(self._on_cross_rebuild)
+        dp.browsePathChosen.connect(self._on_browse_chosen)
 
         # ---- Train Panel ----
         tp = self.train_panel
@@ -126,19 +141,45 @@ class PoseController:
         self._runner.stderrReceived.connect(self._on_stderr)
         self._runner.finished.connect(self._on_finished)
 
-        # ---- 注入 browse 起始目录 QSettings fallback ----
-        # provider 是 core/settings_store.make_start_dir_provider 返回的纯闭包，
-        # 仅关闭 settings_store + le→key 映射；Panel 不持有 Controller，也不调用其方法。
-        start_dir_provider = make_start_dir_provider(
-            self._settings_store, self._settings_keys)
+        # ---- 注入 browse 起始目录 provider（完整优先级：当前合法路径 > 字段 last > 全局 last）----
+        # provider 只关闭 settings_store + le→key 映射；Panel 不持有 Controller。
+        start_dir_provider = self._make_browse_start_provider()
         self.dataset_panel.set_start_dir_provider(start_dir_provider)
         self.train_panel.set_start_dir_provider(start_dir_provider)
         self.eval_panel.set_start_dir_provider(start_dir_provider)
+
+    def _make_browse_start_provider(self) -> Callable[[QLineEdit], str]:
+        """构造 browse 起始目录解析闭包（空串 -> Panel 回退项目根目录）。"""
+        def resolve(le: QLineEdit) -> str:
+            key = self._settings_keys.get(le)
+            field_last = None
+            if key:
+                field_last = self._settings_store.get(key + "_last_dir")
+            return resolve_browse_start(
+                le.text().strip(), field_last,
+                self._settings_store.get("last_browse_dir"), "")
+        return resolve
+
+    def _on_browse_chosen(self, le: QLineEdit, path_text: str) -> None:
+        """Browse 成功后记忆目录：字段级 '<key>_last_dir' + 全局 'last_browse_dir'。"""
+        key = self._settings_keys.get(le)
+        p = Path(path_text)
+        last_dir = str(p.parent if p.is_file() else p)
+        if key:
+            self._settings_store.set(key + "_last_dir", last_dir)
+        self._settings_store.set("last_browse_dir", last_dir)
+        self._settings_store.sync()
 
     # ================================================================ 初始化
     def _init(self) -> None:
         """启动恢复 + 设置默认值 + 应用当前模式。"""
         self._restore_settings()
+        # Cross-subject canonical template 默认路径（QSettings 无记忆时回退到项目约定路径）
+        if not self.dataset_panel.le_x_template.text().strip():
+            default_tmpl = (
+                _REPO_ROOT / "YJJ_Pose_Scripts" / "06_debug" / "templates"
+                / "hand_kpt7_template.txt")
+            self.dataset_panel.le_x_template.setText(str(default_tmpl))
         # Python 训练环境：未从 QSettings 恢复时回退到启动 GUI 的 Python
         if not self.train_panel.le_py.text().strip():
             self.train_panel.le_py.setText(sys.executable)
@@ -161,6 +202,11 @@ class PoseController:
 
         Panel 内部已处理控件启停，Controller 只负责业务逻辑。
         """
+        # 数据集来源变化后，旧的 cross-subject 校验结果不再可信，清空并要求重新 Validate
+        self._cross_validate_ok = False
+        self._cross_json = None
+        self._cross_block = ""
+        self.dataset_panel.reset_cross_summary()
         self._update_yaml_paths()
         if self.dataset_panel.is_existing_mode():
             self._check_existing_dataset()
@@ -188,6 +234,11 @@ class PoseController:
     # ================================================================ 已有数据集检查
     def _check_existing_dataset(self) -> None:
         """检查已选数据集根目录：扫描 RGBD 变体 + 现场统计 + report 合并。"""
+        # 数据集路径变化 -> 旧 cross-subject 校验结果作废
+        self._cross_validate_ok = False
+        self._cross_json = None
+        self._cross_block = ""
+        self.dataset_panel.reset_cross_summary()
         root = self.dataset_panel.le_existing.text().strip()
         if not root:
             return
@@ -323,6 +374,7 @@ class PoseController:
     def _disable_all(self, disable: bool) -> None:
         """运行期间禁用所有操作按钮。"""
         self.dataset_panel.set_prepare_enabled(not disable)
+        self.dataset_panel.set_cross_busy(disable)
         self.train_panel.set_operation_buttons_enabled(not disable)
         self.eval_panel.set_operation_buttons_enabled(not disable)
 
@@ -330,6 +382,8 @@ class PoseController:
         """任务结束后恢复"当前模式应有的控件状态"。"""
         self.train_panel.set_operation_buttons_enabled(True)
         self.dataset_panel.set_prepare_enabled(self.dataset_panel.is_new_mode())
+        self.dataset_panel.set_cross_busy(False)
+        self.dataset_panel.set_cross_rebuild_ok(self._cross_validate_ok)
         self.eval_panel.set_operation_buttons_enabled(True)
 
     # ================================================================ 启动子进程
@@ -377,6 +431,98 @@ class PoseController:
             return
         cmd = CommandService.build_prepare_command(rgb, depth_npy, label, out, cls, low, high)
         self._run("prepare", cmd, "处理中")
+
+    # ================================================================ Cross-subject test set
+    def _cross_current_base(self) -> Path | None:
+        """Cross-subject 的当前数据集目录 = “使用已有数据集”选中的目录（需含 rgb/ 与 rgbd/）。"""
+        root = self.dataset_panel.le_existing.text().strip()
+        if not root:
+            return None
+        b = Path(root)
+        if not b.is_dir():
+            return None
+        if not (b / "rgb" / "data_rgb.yaml").is_file():
+            return None
+        if not (b / "rgbd" / "data_rgbd.yaml").is_file():
+            return None
+        return b
+
+    def _cross_inputs(self) -> tuple[str, str, str] | None:
+        img = self.dataset_panel.le_x_img.text().strip()
+        lab = self.dataset_panel.le_x_label.text().strip()
+        npy = self.dataset_panel.le_x_npy.text().strip()
+        if not (img and lab and npy):
+            self._log("[错误] Cross-subject：External Images / Labels / Depth NPY 目录必须全部填写")
+            return None
+        return img, lab, npy
+
+    def _cross_output_name(self) -> str | None:
+        name = self.dataset_panel.le_x_name.text().strip()
+        if not name:
+            self._log("[错误] Cross-subject：Output Dataset Name 不能为空")
+            return None
+        return name
+
+    def _cross_template(self) -> str | None:
+        """Canonical Template Label 路径（Validate/Rebuild 前检查存在）。"""
+        t = self.dataset_panel.le_x_template.text().strip()
+        if not t:
+            self._log("[错误] Cross-subject：Canonical Template Label 不能为空")
+            return None
+        if not Path(t).is_file():
+            self._log(f"[错误] Cross-subject：Canonical Template Label 不存在: {t}")
+            return None
+        return t
+
+    def _on_cross_validate(self) -> None:
+        """Cross-subject Validate：只读校验外部目录 + keypoint/template 一致性。"""
+        b = self._cross_current_base()
+        if b is None:
+            self._log('[错误] Cross-subject：请先在"使用已有数据集"选择当前数据集目录'
+                      '（需含 rgb/ 与 rgbd/）')
+            return
+        inputs = self._cross_inputs()
+        if inputs is None:
+            return
+        name = self._cross_output_name()
+        if name is None:
+            return
+        tmpl = self._cross_template()
+        if tmpl is None:
+            return
+        img, lab, npy = inputs
+        self._cross_json = None
+        self._cross_block = ""
+        audit_dir = str(_REPO_ROOT / "runs" / "cross_subject_audit")
+        cmd = CommandService.build_cross_command(
+            "validate", str(b), name, img, lab, npy, tmpl, audit_dir=audit_dir)
+        self._run("cross_validate", cmd, "Cross-subject 校验中")
+
+    def _on_cross_rebuild(self) -> None:
+        """Cross-subject Rebuild Test Set：staging 完整重建（含 canonical reorder）并发布。"""
+        if not self._cross_validate_ok:
+            self._log("[错误] Cross-subject：请先 Validate（通过后 Rebuild 才会启用）")
+            return
+        b = self._cross_current_base()
+        if b is None:
+            self._log('[错误] Cross-subject：请先在"使用已有数据集"选择当前数据集目录'
+                      '（需含 rgb/ 与 rgbd/）')
+            return
+        inputs = self._cross_inputs()
+        if inputs is None:
+            return
+        name = self._cross_output_name()
+        if name is None:
+            return
+        tmpl = self._cross_template()
+        if tmpl is None:
+            return
+        img, lab, npy = inputs
+        self._cross_json = None
+        self._cross_block = ""
+        cmd = CommandService.build_cross_command(
+            "rebuild", str(b), name, img, lab, npy, tmpl)
+        self._run("cross_rebuild", cmd, "Cross-subject 重建中")
 
     # ================================================================ 4ch 权重
     def _on_base_weight_changed(self, _base_text: str) -> None:
@@ -545,9 +691,22 @@ class PoseController:
                     self._last_ablate_result = result
                 else:
                     self._log("[警告] 消融结果 JSON 解析失败")
+            elif "CROSS_SUBJECT_JSON" in line:
+                payload = line.split("CROSS_SUBJECT_JSON", 1)[1].strip()
+                try:
+                    self._cross_json = json.loads(payload)
+                except ValueError:
+                    self._cross_json = None
+                    self._log("[警告] Cross-subject 结果 JSON 解析失败")
 
     def _on_stderr(self, data: str) -> None:
-        self._log("[err] " + data)
+        for line in data.splitlines():
+            if line.startswith("CROSS_SUBJECT_BLOCK"):
+                msg = line.split("CROSS_SUBJECT_BLOCK", 1)[1].strip()
+                self._cross_block = msg
+                self._log(f"[Cross-subject BLOCK] {msg}")
+            else:
+                self._log("[err] " + line)
 
     def _on_stop(self) -> None:
         """请求停止当前运行中的子进程。"""
@@ -557,7 +716,61 @@ class PoseController:
         else:
             self._log("[停止] 当前没有运行中的任务")
 
+    # ================================================================ Cross-subject 完成回调
+    def _finish_cross(self, op: str, code: int) -> None:
+        """Cross-subject validate / rebuild 结束处理：回写摘要 + 控制 Rebuild 可用性。"""
+        dp = self.dataset_panel
+        if self._runner.user_stopped:
+            self._cross_validate_ok = False
+            dp.set_cross_rebuild_ok(False)
+            dp.set_cross_status("已停止")
+            self._log("[结束] 用户已停止当前任务")
+            return
+        p = self._cross_json
+        if code == 0 and isinstance(p, dict):
+            dp.set_cross_summary(p)
+            if op == "cross_validate":
+                self._cross_validate_ok = True
+                dp.set_cross_rebuild_ok(True)
+                ok_n = p.get("reorder_ok_count")
+                total = p.get("reorder_total")
+                max_rms = p.get("max_residual")
+                if ok_n is not None and total is not None:
+                    dp.set_cross_status(
+                        f"Canonical reorder: {ok_n}/{total} OK "
+                        f"| Max residual: {max_rms} | Blocked: 0")
+                else:
+                    dp.set_cross_status("Ready to rebuild")
+                self._log(f"[Cross-subject] 校验通过：Images={p.get('images')} "
+                          f"Labels={p.get('labels')} Depth={p.get('depth')} "
+                          f"Matched={p.get('matched')} Keypoints={p.get('keypoints')} "
+                          f"Canonical reorder: {ok_n}/{total} OK "
+                          f"Max residual: {max_rms}")
+            else:
+                self._cross_validate_ok = False
+                dp.set_cross_rebuild_ok(False)
+                dp.set_cross_status(
+                    f"Cross-subject dataset ready | Train={p.get('base_train')} "
+                    f"| Val={p.get('base_val')} | Test={p.get('test')} "
+                    f"| RGB/RGBD sync OK")
+                self._log(f"[Cross-subject] 重建完成 -> {p.get('target_dir')} "
+                          f"(Train={p.get('base_train')} | Val={p.get('base_val')} "
+                          f"| Test={p.get('test')} | RGB/RGBD sync OK)")
+        else:
+            self._cross_validate_ok = False
+            dp.set_cross_rebuild_ok(False)
+            msg = self._cross_block or f"失败（exit_code={code}）"
+            dp.set_cross_status(msg)
+            self._log(f"[Cross-subject] {op} {msg}")
+
     def _on_finished(self, op: str, code: int) -> None:
+        # ---- Cross-subject（validate / rebuild）分支 ----
+        if op in ("cross_validate", "cross_rebuild"):
+            self._finish_cross(op, code)
+            self.status_log_panel.set_stop_enabled(False)
+            self._restore_controls()
+            return
+
         # ---- 评估（eval_*）分支 ----
         if op and op.startswith("eval_"):
             leg = op.split("_", 1)[1]
