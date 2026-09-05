@@ -24,8 +24,9 @@ Phase 5（已完成）：LamaInferenceService 接入 + TestOne 可选推理预�
 Phase 6（本文件）：Q 原子 Commit 状态机（Image+Label+Rolling Ref+Next）
 
 正确性修复（P0/P1）：
-- P0-2: Q 不再有 y/x fallback；必须有 7 个 OK 预测，否则 BLOCK；failed track 不允许
+- P0-2: Q 不再有 y/x fallback；必须有 N 个 OK 预测，否则 BLOCK；failed track 不允许
         直接用未位移的 ref_center 作为正常预测（_get_predicted_centers 仅返回 ok=True）。
+        N = 本次 session 的关键点数量（UI Keypoints，SetRef 时锁定）。
 - P0-3: Q 真正原子提交：
         * 预先 prepare_reference 预验证 Reference State，inference 前就确保可 apply
         * 写 image.tmp.<ext> + label.tmp.txt（保留真实扩展名，cv2 才能正确编码）
@@ -67,9 +68,6 @@ if TYPE_CHECKING:
 # 支持的图片扩展名（与 C++ 一致）
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp"}
 
-# 期望的 mask component 数量（工作流固定 7 个 keypoint）
-_EXPECTED_COMPONENT_COUNT = 7
-
 
 # ============================================================ Q 原子 Commit 快照
 @dataclass
@@ -82,7 +80,7 @@ class _CommitSnapshot:
     current_path: str                           # 快照时的图片绝对路径
     original_rgb: np.ndarray                    # 原图 RGB（numpy，已 copy）
     final_mask: np.ndarray                      # 最终人工确认 mask（numpy，已 copy）
-    ordered_points: list[tuple[float, float]]   # stable ID -> (cx, cy) 7 个点（canonical 顺序）
+    ordered_points: list[tuple[float, float]]   # stable ID -> (cx, cy) N 个点（canonical 顺序）
     bbox: tuple[int, int, int, int]             # 占位 BoundingBox (x, y, w, h)
     image_size: tuple[int, int]                 # (width, height)
     output_path: str                            # out/ 目录下的输出图片路径
@@ -171,6 +169,11 @@ class LamaController(QObject):
         self._reference_index: int = -1       # 当前 Reference 对应的图片索引（rolling reference）
         self._busy: bool = False              # Q 流程进行中（避免状态被破坏）
 
+        # ---- 本次 session 的关键点数量 N ----
+        # 0  = 尚未 SetRef，数量仍以 UI Keypoints 当前值为准（允许随时改）
+        # >0 = SetRef 成功时锁定的 N，整个 rolling reference session 固定不变
+        self._expected_keypoint_count: int = 0
+
         # ---- services ----
         self._mask_label_service: MaskLabelService = MaskLabelService()
         self._reference_alignment_service: ReferenceAlignmentService = ReferenceAlignmentService()
@@ -213,6 +216,42 @@ class LamaController(QObject):
         refresh_status 之类的高频状态刷新绝不写日志。
         """
         self._log_sink(f"[LaMa] {text}")
+
+    # ================================================================ 关键点数量 N（session 生命周期）
+    def ExpectedKeypointCount(self) -> int:
+        """当前 session 生效的关键点数量 N（对外只读）。"""
+        return self._current_expected_count()
+
+    def ClearReference(self) -> None:
+        """清除 Reference 并解锁关键点数量（Reset / Clear Reference 流程入口）。
+
+        清除后用户可以重新选择 Keypoints，再重新 SetRef 建立新的 session。
+        """
+        self._reset_reference_session()
+        self._refresh_status()
+        self._log("Reference 已清除，关键点数量已解锁")
+
+    def _current_expected_count(self) -> int:
+        """当前生效的关键点数量 N。
+
+        SetRef 成功后锁定为 _expected_keypoint_count；
+        尚未 SetRef 时直接取 UI Keypoints 的当前值（允许随时修改）。
+        """
+        if self._expected_keypoint_count > 0:
+            return self._expected_keypoint_count
+        return self._page.KeypointCount()
+
+    def _reset_reference_session(self) -> None:
+        """重置整个 rolling reference session 并解锁关键点数量（唯一入口）。
+
+        Open 新序列 / ClearReference 都走这里，保证
+        “清 reference + 解锁 N” 只有一处实现，避免两处状态不一致。
+        """
+        self._reference_index = -1
+        self._current_prediction = None
+        self._reference_alignment_service = ReferenceAlignmentService()
+        self._expected_keypoint_count = 0
+        self._page.SetKeypointCountEditable(True)
 
     # ================================================================ Worker 生命周期（P1-4）
     def cleanup_worker(self) -> None:
@@ -329,10 +368,8 @@ class LamaController(QObject):
 
         # ---- 重置上一轮 LaMa 标注 session（新序列绝不能继承旧 rolling reference）----
         # 只重建 ReferenceAlignmentService，不动 MaskLabelService / LamaInferenceService，
-        # 避免自动加载好的 ONNX 模型被丢掉。
-        self._reference_index = -1
-        self._current_prediction = None
-        self._reference_alignment_service = ReferenceAlignmentService()
+        # 避免自动加载好的 ONNX 模型被丢掉；同时解锁关键点数量选择。
+        self._reset_reference_session()
 
         self._image_files = [str(p) for p in files]
         try:
@@ -474,9 +511,10 @@ class LamaController(QObject):
 
         与 C++ MainWindow::onSetAsReference 一致：
         1. 检查 canvas 有图 + mask 非空
-        2. 从 finalMask 提取 centers，按 (y,x) 升序建立 canonical ID 0..6
-        3. 调 ReferenceAlignmentService.set_reference(...)
-        4. 更新 reference_index / 清空 current_prediction
+        2. 从 UI 读取本次 session 的关键点数量 N，finalMask 必须恰好 N 个 component
+        3. 从 finalMask 提取 centers，按 (y,x) 升序建立 canonical ID 0..N-1
+        4. 调 ReferenceAlignmentService.set_reference(..., expected_count=N)
+        5. 成功后锁定 N（UI SpinBox disable）+ 更新 reference_index / 清空 current_prediction
         """
         if self._busy:
             self._page.set_status_text("Busy，请等待 Q 完成")
@@ -488,39 +526,49 @@ class LamaController(QObject):
             return
         mask = canvas.mask_image()
         if mask.isNull():
-            self._page.set_status_text("Mask is empty, please draw 7 masks first")
+            n_hint = self._current_expected_count()
+            self._page.set_status_text(
+                f"Mask is empty, please draw {n_hint} masks first"
+            )
             return
 
         # ---- 转 numpy ----
         ref_rgb = self._qimage_to_rgb_np(src)
         ref_mask = self._mask_qimage_to_np(mask)
 
+        # ---- 关键点数量在 SetRef 这一刻从 UI 读取并锁定 ----
+        n = self._page.KeypointCount()
+
         # ---- 从 finalMask 提取 centers（与 C++ ExtractMaskCenters 一致）----
         centers = ReferenceAlignmentService.extract_mask_centers(
             ref_mask, min_component_area=50
         )
-        if len(centers) != _EXPECTED_COMPONENT_COUNT:
+        if len(centers) != n:
             self._page.set_status_text(
-                f"Expected {_EXPECTED_COMPONENT_COUNT} masks, got {len(centers)}"
+                f"Expected {n} components, got {len(centers)}"
             )
             self._log(
-                f"SetRef 失败：期望 {_EXPECTED_COMPONENT_COUNT} 个 mask component，"
+                f"SetRef 失败：期望 {n} 个 mask component，"
                 f"实际 {len(centers)} 个"
             )
             return
 
-        # ---- 按 (y, x) 升序建立 canonical ID 0..6（stable ID 关键）----
+        # ---- 按 (y, x) 升序建立 canonical ID 0..N-1（stable ID 关键）----
         centers.sort(key=lambda c: (c[1], c[0]))
 
-        # ---- 调 service ----
+        # ---- 调 service（component 数与 canonical 点数都必须 == N）----
         ok = self._reference_alignment_service.set_reference(
-            ref_rgb, ref_mask, ordered_points=centers, ref_rect=None
+            ref_rgb, ref_mask, ordered_points=centers, ref_rect=None,
+            expected_count=n,
         )
         if not ok:
             self._page.set_status_text("Reference set FAILED")
             self._log("SetRef 失败：ReferenceAlignmentService.set_reference 返回 False")
             return
 
+        # ---- SetRef 成功：锁定 N，之后整个 rolling session 固定不变 ----
+        self._expected_keypoint_count = n
+        self._page.SetKeypointCountEditable(False)
         self._reference_index = self._current_index
         self._current_prediction = None     # 清空旧 prediction
         self._refresh_status()
@@ -529,7 +577,7 @@ class LamaController(QObject):
                     if 0 <= self._current_index < len(self._image_files) else "-")
         self._log(
             f"SetRef 成功：index={self._current_index} ({cur_name})，"
-            f"canonical points={len(centers)}"
+            f"canonical points={len(centers)}，Keypoints 已锁定为 {n}"
         )
 
     def _on_assist_mask(self) -> None:
@@ -540,7 +588,7 @@ class LamaController(QObject):
         2. 调 predict(target_rgb, mode="assist")
         3. 把 prediction.mask 写回 canvas
         4. 保存 current_prediction（供 Q 流程 ID -> predictedCenter 匹配）
-        5. 显示 Prediction: x/7
+        5. 显示 Prediction: x/N（N = 本次 session 关键点数量）
         """
         if self._busy:
             return
@@ -559,6 +607,20 @@ class LamaController(QObject):
         # ---- 调用统一 predict API（A 与 TestOne 共用同一方法）----
         target_rgb = self._qimage_to_rgb_np(src)
         result = self._reference_alignment_service.predict(target_rgb, mode="assist")
+
+        # ---- prediction track 数必须等于本次 session 的关键点数量 N ----
+        expected_n = self._current_expected_count()
+        if result.total != expected_n:
+            self._current_prediction = None
+            self._page.set_prediction_info(0, expected_n)
+            self._page.set_status_text(
+                f"AssistMask BLOCK: prediction tracks {result.total} != {expected_n}"
+            )
+            self._log(
+                f"Assist BLOCK: prediction tracks={result.total}，期望 {expected_n}"
+            )
+            return
+
         self._current_prediction = result
 
         # ---- 显示预测结果到 canvas ----
@@ -767,10 +829,10 @@ class LamaController(QObject):
         真正原子提交流程（P0-3）：
         1. 安全检查（busy / canvas / current_index / mask 非空）
         2. 快照 original_rgb + final_mask + current_path + image_size
-        3. 检查 current_prediction：必须 7 个 OK 预测，否则 BLOCK（P0-2）
+        3. 检查 current_prediction：必须 N 个 OK 预测，否则 BLOCK（P0-2）
            禁止用 finalMask centers 按 y/x 重新建 ID；
            禁止 failed track 用未位移的 ref_center 当作正常预测。
-        4. MaskLabelService 分析 final_mask（7 component + 全局 assignment + bbox）
+        4. MaskLabelService 分析 final_mask（N component + 全局 assignment + bbox）
            失败 -> BLOCK，不写文件
         5. 预验证 Reference State（prepare_reference），失败 BLOCK
         6. 生成输出路径 out/ + labels/
@@ -800,8 +862,11 @@ class LamaController(QObject):
             return
         mask = canvas.mask_image()
         if mask.isNull():
-            self._page.set_status_text("Mask is empty, please draw 7 masks first")
-            self._log("Q BLOCK: mask 为空")
+            n_hint = self._current_expected_count()
+            self._page.set_status_text(
+                f"Mask is empty, please draw {n_hint} masks first"
+            )
+            self._log(f"Q BLOCK: mask 为空（本次 session 需要 {n_hint} 个 component）")
             return
 
         # ---- 2. 快照（与 C++ 一样，异步 callback 里绝不能再读 canvas/current_index）----
@@ -816,54 +881,68 @@ class LamaController(QObject):
         # Case 1: 当前图 == 当前 Reference 且 ref 已经建立
         #         SetRef 之后用户可以直接 Q，不需要 A。
         #         此时 stable ID 来自 Reference canonical points，
-        #         MaskLabelService 会让 finalMask 的 7 个 component
+        #         MaskLabelService 会让 finalMask 的 N 个 component
         #         与 canonical reference points 做一对一匹配，
         #         即使用户在 SetRef 后又轻微修了 Mask 也能正确 assignment。
         # Case 2: 当前图 != Reference
-        #         必须有 A 的稳定预测（7 个 OK stable ID），否则 BLOCK。
+        #         必须有 A 的稳定预测（N 个 OK stable ID），否则 BLOCK。
         #         禁止对后续图退回到 finalMask centers 按 y/x 重排建 ID，
         #         因为那会破坏跨图的 stable ID 一致性。
         is_current_ref = (
             self._current_index == self._reference_index
             and self._reference_alignment_service.is_ready()
         )
+        # ---- 本次 session 的关键点数量 N（SetRef 后已锁定）----
+        n = self._current_expected_count()
         if is_current_ref:
             # ---- Case 1：Reference 自己直接 Q ----
             ref_points = self._reference_alignment_service.reference_points()
-            if len(ref_points) != _EXPECTED_COMPONENT_COUNT:
+            if len(ref_points) != n:
                 self._page.set_status_text(
-                    f"Q BLOCK: Reference canonical points 不足 {_EXPECTED_COMPONENT_COUNT} 个"
+                    f"Q BLOCK: Reference canonical points 不足 {n} 个"
                 )
                 self._log(
-                    f"Q BLOCK: Reference canonical points={len(ref_points)}，"
-                    f"需 {_EXPECTED_COMPONENT_COUNT} 个"
+                    f"Q BLOCK: Reference canonical points={len(ref_points)}，需 {n} 个"
                 )
                 return
-            predicted_centers = {
-                i: ref_points[i] for i in range(_EXPECTED_COMPONENT_COUNT)
-            }
+            predicted_centers = {i: ref_points[i] for i in range(n)}
         else:
             # ---- Case 2：后续图必须来自 A prediction ----
             predicted_centers = self._get_predicted_centers()
-            if len(predicted_centers) != _EXPECTED_COMPONENT_COUNT:
+            if len(predicted_centers) != n:
                 self._page.set_status_text(
                     "当前图片尚未执行 Assist Mask，请先按 A。"
                 )
                 self._log(
-                    f"Q BLOCK: 有效预测 {len(predicted_centers)}/"
-                    f"{_EXPECTED_COMPONENT_COUNT}，请先按 A"
+                    f"Q BLOCK: 有效预测 {len(predicted_centers)}/{n}，请先按 A"
+                )
+                return
+            # rolling reference 必须基于已建立且合法的 Reference 几何
+            ref_points = self._reference_alignment_service.reference_points()
+            if len(ref_points) != n:
+                self._page.set_status_text(
+                    f"Q BLOCK: 缺少合法 Reference（{n} 点），请先 SetRef"
+                )
+                self._log(
+                    f"Q BLOCK: rolling reference 缺 Reference canonical points="
+                    f"{len(ref_points)}，需 {n} 个"
                 )
                 return
 
-        # ---- 4. MaskLabelService 分析 final_mask（component 数 != 7 或 assignment 失败 -> BLOCK）----
+        # ---- 4. MaskLabelService 分析 final_mask（component 数 != N 或 assignment 失败 -> BLOCK）----
+        # Option 2 防御：把当前合法 Reference 的 ordered reference_points 传入，
+        # 由 assign_stable_ids 做“Reference N 点整体几何一致性”定 ID，
+        # 防止 A/tracking 中任意两个 stable ID 交换污染最终 label。
         label_result = self._mask_label_service.make_label(
-            final_mask, predicted_centers, image_size
+            final_mask, predicted_centers, image_size,
+            expected_count=n,
+            reference_points=ref_points,
         )
         if label_result is None:
             self._page.set_status_text(
-                "Q BLOCK: mask label validation FAILED (7 components / stable ID / distance)"
+                f"Q BLOCK: mask label validation FAILED ({n} components / stable ID / distance)"
             )
-            self._log("Q BLOCK: mask label 校验失败（7 component / stable ID / 距离）")
+            self._log(f"Q BLOCK: mask label 校验失败（{n} component / stable ID / 距离）")
             return
 
         # ---- 5. P0-3: 预验证 Reference State（不修改当前状态）----
@@ -872,12 +951,15 @@ class LamaController(QObject):
             original_rgb, final_mask,
             ordered_points=list(label_result.ordered_points),
             ref_rect=None,
+            expected_count=n,
         )
         if prepared_ref is None:
             self._page.set_status_text(
-                "Q BLOCK: rolling reference 预验证失败（component 数 != 7 或一对一匹配失败）"
+                f"Q BLOCK: rolling reference 预验证失败（component 数 != {n} 或一对一匹配失败）"
             )
-            self._log("Q BLOCK: rolling reference 预验证失败（component != 7 或匹配失败）")
+            self._log(
+                f"Q BLOCK: rolling reference 预验证失败（component != {n} 或匹配失败）"
+            )
             return
 
         # ---- 6. 生成输出路径（与 C++ 一致：sourceDir/out/ + sourceDir/labels/）----
@@ -1088,7 +1170,7 @@ class LamaController(QObject):
             self._page, "LaMa Erasure 使用说明",
             "工作流：\n"
             "1. Open 打开图片\n"
-            "2. 左键画 mask（7 个）/ 右键擦\n"
+            f"2. 先选 Keypoints 数量，再左键画 mask（{self._current_expected_count()} 个）/ 右键擦\n"
             "3. SetRef 设为基准\n"
             "4. TestOne 测试追踪\n"
             "5. 下一张 -> A 预测 mask -> 人工修正 -> Q 提交\n"
@@ -1171,7 +1253,7 @@ class LamaController(QObject):
         规则：
         - 只返回 ok=True 的 track 的 current_center
         - failed track 不允许用未位移的 ref_center 作为正常预测（这是危险兜底）
-        - 返回长度 < 7 时上层 _on_commit 会 BLOCK，绝不偷偷用 y/x 重排建 ID
+        - 返回长度 < N 时上层 _on_commit 会 BLOCK，绝不偷偷用 y/x 重排建 ID
         """
         if self._current_prediction is None:
             return {}
@@ -1191,10 +1273,13 @@ class LamaController(QObject):
             filename = Path(self._image_files[self._current_index]).name
             self._page.set_current_info(self._current_index, n, filename)
 
+        # ---- 关键点数量 N（SetRef 后锁定，之前取 UI 当前值）----
+        kp = self._current_expected_count()
+
         if self._reference_index >= 0:
             self._page.set_reference_info(self._reference_index, None)
             self._page.set_reference_ready(
-                self._reference_alignment_service.is_ready()
+                self._reference_alignment_service.is_ready(), kp
             )
         else:
             self._page.set_reference_info(None, None)
@@ -1207,6 +1292,6 @@ class LamaController(QObject):
                 self._current_prediction.total
             )
         else:
-            self._page.set_prediction_info(0, _EXPECTED_COMPONENT_COUNT)
+            self._page.set_prediction_info(0, kp)
 
         self._page.set_busy(self._busy)

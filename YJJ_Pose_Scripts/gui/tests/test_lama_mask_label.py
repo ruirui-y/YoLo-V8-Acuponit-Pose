@@ -77,13 +77,13 @@ def main() -> None:
     centers_6 = centers_7[:6]
     mask6 = _make_mask_with_circles((640, 480), centers_6, radius=12)
     res6 = svc.make_label(mask6, {i: c for i, c in enumerate(centers_6)},
-                          (640, 480))
+                          (640, 480), expected_count=7)
     _check("2a. 6 component -> None", res6 is None, failures)
 
     centers_8 = centers_7 + [(400, 300)]
     mask8 = _make_mask_with_circles((640, 480), centers_8, radius=12)
     res8 = svc.make_label(mask8, {i: c for i, c in enumerate(centers_8)},
-                         (640, 480))
+                         (640, 480), expected_count=7)
     _check("2b. 8 component -> None", res8 is None, failures)
 
     # ================================================================ 3. first-reference canonical y/x ID
@@ -94,7 +94,7 @@ def main() -> None:
     # 注意：ExtractMaskCenters / BuildLocalTracks 在 C++ 里用 centroid 而非 bbox center
     sorted_centers = sorted(centers_7, key=lambda c: (c[1], c[0]))
     predicted = {i: c for i, c in enumerate(sorted_centers)}
-    res = svc.make_label(mask, predicted, (640, 480))
+    res = svc.make_label(mask, predicted, (640, 480), expected_count=7)
     _check("3a. make_label 成功（7 ID + 7 component 一对一）",
            res is not None, failures)
     if res:
@@ -120,7 +120,7 @@ def main() -> None:
     random.shuffle(comps_shuffled)
     # 把它“伪装”成一个新的 mask：直接复用 make_label 不行，因为 make_label 内部会重新 extract
     # 直接调 assign_stable_ids 验证
-    ordered = svc.assign_stable_ids(comps_shuffled, predicted)
+    ordered = svc.assign_stable_ids(comps_shuffled, predicted, expected_count=7)
     _check("4a. 打乱 components 顺序后 assign_stable_ids 仍成功",
            ordered is not None, failures)
     if ordered:
@@ -133,30 +133,41 @@ def main() -> None:
         _check("4b. 打乱后 ID->Component 映射仍正确",
                all_match, failures)
 
-    # ================================================================ 5. bbox 生成
-    print("[5] bbox 生成 + clamp")
+    # ================================================================ 5. bbox 生成（比例 padding 规则）
+    print("[5] bbox 生成 = component union + 比例 padding + clamp")
     if res:
         bx, by, bw, bh = res.bbox
-        # 7 个点的 min/max + 20 padding
-        min_x = min(c[0] for c in centers_7) - 20
-        min_y = min(c[1] for c in centers_7) - 20
-        max_x = max(c[0] for c in centers_7) + 20
-        max_y = max(c[1] for c in centers_7) + 20
-        # clamp 到图内（这里图是 640x480）
-        min_x = max(0, min_x)
-        min_y = max(0, min_y)
-        max_x = min(640, max_x)
-        max_y = min(480, max_y)
-        _check("5a. bbox x ≈ 预期",
-               abs(bx - min_x) < 1.0, failures, f"bx={bx} expected={min_x}")
-        _check("5b. bbox y ≈ 预期",
-               abs(by - min_y) < 1.0, failures, f"by={by} expected={min_y}")
-        _check("5c. bbox w ≈ 预期",
-               abs(bw - (max_x - min_x)) < 1.0,
-               failures, f"bw={bw} expected={max_x - min_x}")
-        _check("5d. bbox h ≈ 预期",
-               abs(bh - (max_y - min_y)) < 1.0,
-               failures, f"bh={bh} expected={max_y - min_y}")
+        # build_bbox 用的是 N 个 component.bbox 的 union（圆 bbox = 圆心 ± radius），
+        # 不是 centroid 的 min/max，所以这里用真实 extract 出的 component bbox 计算预期。
+        comps_b = svc.extract_components(mask, min_area=50)
+        min_x0 = min(c.bbox[0] for c in comps_b)
+        max_x0 = max(c.bbox[0] + c.bbox[2] for c in comps_b)
+        min_y0 = min(c.bbox[1] for c in comps_b)
+        max_y0 = max(c.bbox[1] + c.bbox[3] for c in comps_b)
+        union_w = max_x0 - min_x0
+        union_h = max_y0 - min_y0
+        # 新规则（不再固定 20px）：pad = max(min_padding, union * ratio)
+        min_p = MaskLabelService.DEFAULT_MIN_BBOX_PADDING
+        rx = MaskLabelService.DEFAULT_BBOX_PADDING_RATIO_X
+        ry = MaskLabelService.DEFAULT_BBOX_PADDING_RATIO_Y
+        pad_x = max(min_p, union_w * rx)
+        pad_y = max(min_p, union_h * ry)
+        exp_x = max(0, min_x0 - pad_x)
+        exp_y = max(0, min_y0 - pad_y)
+        exp_x2 = min(640, max_x0 + pad_x)
+        exp_y2 = min(480, max_y0 + pad_y)
+        exp_w = exp_x2 - exp_x
+        exp_h = exp_y2 - exp_y
+        _check("5a. bbox x ≈ 比例 padding 预期",
+               abs(bx - exp_x) < 1.0, failures, f"bx={bx} expected={exp_x}")
+        _check("5b. bbox y ≈ 比例 padding 预期",
+               abs(by - exp_y) < 1.0, failures, f"by={by} expected={exp_y}")
+        _check("5c. bbox w ≈ 比例 padding 预期",
+               abs(bw - exp_w) < 1.0, failures, f"bw={bw} expected={exp_w}")
+        _check("5d. bbox h ≈ 比例 padding 预期",
+               abs(bh - exp_h) < 1.0, failures, f"bh={bh} expected={exp_h}")
+        _check("5e. 比例 padding 已生效（非旧固定 20px 规则）",
+               pad_x > 20 and pad_y > 20, failures, f"pad_x={pad_x} pad_y={pad_y}")
 
     # ================================================================ 6. YOLO label 输出格式
     print("[6] YOLO label 输出格式（26 数值、归一化、vis=2）")
@@ -198,7 +209,7 @@ def main() -> None:
     # 另一个 ID 会匹配失败 -> None
     # 这里简化：predicted_centers 与 components 数量不匹配
     bad_predicted = {i: c for i, c in enumerate(centers_7[:6])}  # 只给 6 个 ID
-    ordered_bad = svc.assign_stable_ids(comps, bad_predicted)
+    ordered_bad = svc.assign_stable_ids(comps, bad_predicted, expected_count=7)
     _check("7a. predicted_centers 只有 6 个 ID -> None",
            ordered_bad is None, failures)
 
@@ -206,11 +217,11 @@ def main() -> None:
     bad_predicted2 = {0: centers_7[0], 1: centers_7[1], 2: centers_7[2],
                      3: centers_7[3], 4: centers_7[4], 5: centers_7[5],
                      6: centers_7[5]}  # 重复
-    ordered_bad2 = svc.assign_stable_ids(comps, bad_predicted2)
-    _check("7b. 两个 ID 抢同一坐标 -> 仍可一对一匹配（component 有 7 个）",
-           ordered_bad2 is not None, failures)
-    # 注：由于 components 实际有 7 个，predicted_centers 有 2 个 ID 指向同坐标，
-    # 贪心会把它们分配给两个不同 component，所以仍能匹配成功
+    ordered_bad2 = svc.assign_stable_ids(comps, bad_predicted2, expected_count=7)
+    _check("7b. 两个 ID 抢同一坐标 -> 距离超阈值 BLOCK（None）",
+           ordered_bad2 is None, failures)
+    # 注：keys 虽为 0..6（匈牙利仍能分配不同 component），但 ID6 匹配到的 component
+    # 距其预测坐标远超 max_assignment_distance，整体不可靠 -> BLOCK（绝不写错误标签）
 
     # ================================================================ 8. save_label 原子写入
     print("[8] save_label 失败时不留 .tmp")

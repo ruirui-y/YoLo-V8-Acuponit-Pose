@@ -105,4 +105,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.pose_page.save_settings()
+        # P1-4: LaMa 后台模型加载/推理 worker 在窗口关闭时必须显式 wait/terminate，
+        # 否则退出时 "QThread: Destroyed while still running" 会原生崩溃。
+        try:
+            self.lama_page.controller.cleanup_worker()
+        except Exception:  # noqa: BLE001
+            pass
         super().closeEvent(event)

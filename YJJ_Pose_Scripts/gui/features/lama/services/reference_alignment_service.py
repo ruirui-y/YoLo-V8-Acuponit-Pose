@@ -27,10 +27,11 @@ from __future__ import annotations
 import copy
 
 from dataclasses import dataclass, field
-from itertools import permutations
 
 import cv2
 import numpy as np
+
+from .assignment_solver import solve_linear_assignment
 
 
 # ============================================================ 数据结构
@@ -156,7 +157,8 @@ class ReferenceAlignmentService:
     def reference_points(self) -> list[tuple[float, float]]:
         """返回当前 Reference 的 canonical ordered points 副本。
 
-        index 0..6 = stable ID 0..6，与 SetRef/rolling ref 建立的 canonical 顺序一致。
+        index 0..N-1 = stable ID 0..N-1（N 为本次 session 的关键点数量），
+        与 SetRef/rolling ref 建立的 canonical 顺序一致。
         绝不直接返回内部 list 原对象，避免外部意外修改内部状态。
         """
         return list(self._ref_points_a)
@@ -165,7 +167,8 @@ class ReferenceAlignmentService:
                           ref_rgb: np.ndarray,
                           ref_mask_gray: np.ndarray,
                           ordered_points: list[tuple[float, float]] | None = None,
-                          ref_rect: object | None = None) -> _PreparedReference | None:
+                          ref_rect: object | None = None,
+                          expected_count: int | None = None) -> _PreparedReference | None:
         """预构建并验证新的 Reference State，但不修改当前状态（供 Q 原子 Commit 使用）。
 
         与 set_reference 算法一致，但只返回 _PreparedReference 或 None，
@@ -174,7 +177,14 @@ class ReferenceAlignmentService:
         用途：Q 流程先 prepare_reference() 预验证能否成功，再启动后台推理，
         最后文件写成功后再 apply_prepared_reference() 应用，避免半提交。
 
-        参数同 set_reference。返回：_PreparedReference 或 None（失败）
+        参数：
+            ordered_points: canonical ordered_points [(x, y), ...]
+            expected_count: 本次 session 的关键点数量 N（由 Controller 从 UI 取得）。
+                            非 None 时要求 mask component 数 == N 且
+                            ordered_points 长度 == N，否则 BLOCK。
+                            None 表示沿用“component 数由 mask 自身决定”的历史行为。
+
+        返回：_PreparedReference 或 None（失败）
         """
         if ref_rgb is None or ref_mask_gray is None:
             return None
@@ -194,6 +204,11 @@ class ReferenceAlignmentService:
         tracks_unsorted = self._build_local_tracks_into(ref_gray, ref_mask)
         if not tracks_unsorted:
             return None
+
+        # ---- 3.5 关键点数量校验：N 由本次 session（UI）决定，不再固定 7 ----
+        if expected_count is not None and expected_count > 0:
+            if len(tracks_unsorted) != expected_count:
+                return None
 
         # ---- 4. 赋 canonical ID ----
         # 关键约束（本修复后）：
@@ -248,14 +263,15 @@ class ReferenceAlignmentService:
                       ref_rgb: np.ndarray,
                       ref_mask_gray: np.ndarray,
                       ordered_points: list[tuple[float, float]] | None = None,
-                      ref_rect: object | None = None) -> bool:
+                      ref_rect: object | None = None,
+                      expected_count: int | None = None) -> bool:
         """设置基准图与 mask，构建 local tracks（prepare + apply 的便捷封装）。
 
         算法：
         1. 保存参考灰度图 + mask
         2. 拆分 connected components，过滤噪点
         3. 赋 canonical ID：
-           - 有 ordered_points（7 个）：一对一最小距离匹配，每个 component 继承
+           - 有 ordered_points（N 个）：一对一最小距离匹配，每个 component 继承
              ordered_points[i] 对应的 canonical ID = i
            - 无 ordered_points：退化为 (y,x) 升序（仅首次 SetRef 兜底）
         4. 为每个 component 生成局部模板（mask_rect + padding -> template_rect）
@@ -263,15 +279,16 @@ class ReferenceAlignmentService:
         参数：
             ref_rgb:          参考原图（HxWx3 uint8，RGB 或 BGR 均可）
             ref_mask_gray:    参考 mask（HxW uint8，0/255）
-            ordered_points:   canonical ordered_points [(x, y), ...]（必须 7 个）
+            ordered_points:   canonical ordered_points [(x, y), ...]（必须 N 个）
                               首次 SetRef 由 Controller 按 (y,x) 升序传入；
                               后续 rolling ref 由 Q 流程传入上一轮继承的 canonical 顺序
             ref_rect:         参考 BoundingBox (x, y, w, h)（可选，目前未使用）
+            expected_count:   本次 session 的关键点数量 N（由 Controller 从 UI 取得）
 
-        返回：True 成功 / False 失败（一对一匹配失败或 components 数 != 7）
+        返回：True 成功 / False 失败（一对一匹配失败 / 数量 != N / mask 为空）
         """
         prepared = self.prepare_reference(
-            ref_rgb, ref_mask_gray, ordered_points, ref_rect)
+            ref_rgb, ref_mask_gray, ordered_points, ref_rect, expected_count)
         if prepared is None:
             self._ready = False
             self._local_tracks = []
@@ -442,9 +459,12 @@ class ReferenceAlignmentService:
         """一对一最小距离 assignment：每个 ordered_points[i] 匹配唯一一个 track，
         track 继承 canonical ID = i。
 
-        算法：N 固定 7，直接枚举 permutations（7! = 5040），选总距离最小的一组。
+        算法：构造 N×N 距离代价矩阵，用 O(N^3) 匈牙利求全局最小总距离。
+        关键点数量改为 UI 可配置后，N 可达 32，原先的 permutations(N) 全排列
+        会阶乘爆炸，因此统一改用匈牙利求解器（N=7 结果与枚举一致）。
+
         无距离阈值（rolling reference 由用户已确认 final mask，component 应在合理位置）。
-        若 N != 7 或无法一对一，返回 None（BLOCK）。
+        若数量不匹配或无法一对一，返回 None（BLOCK）。
         """
         n = len(ordered_points)
         if n != len(tracks) or n == 0:
@@ -458,17 +478,8 @@ class ReferenceAlignmentService:
                 dy = pt[1] - tr.ref_center[1]
                 cost[i, j] = (dx * dx + dy * dy) ** 0.5
 
-        # 枚举所有 perm：perm[i] = 第 i 个 ordered_point 匹配的 track 索引
-        best_perm = None
-        best_total = float("inf")
-        for perm in permutations(range(n)):
-            total = 0.0
-            for i in range(n):
-                total += cost[i, perm[i]]
-            if total < best_total:
-                best_total = total
-                best_perm = perm
-
+        # 匈牙利求全局最小一对一分配：best_perm[i] = 第 i 个 ordered_point 匹配的 track 索引
+        best_perm = solve_linear_assignment(cost)
         if best_perm is None:
             return None
 

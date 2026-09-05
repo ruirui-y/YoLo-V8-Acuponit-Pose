@@ -284,13 +284,23 @@ def validate_labels(label_map: dict):
     return expected_k
 
 
-def build_yaml(yaml_path: Path, class_name: str, kpt: int, channels: int, rgbd: bool):
-    """生成 YOLO-Pose data yaml（格式对齐项目现有 acupoint yaml）。"""
+def build_yaml(yaml_path: Path, class_name: str, kpt: int, channels: int, rgbd: bool,
+               dataset_path: Path | None = None):
+    """生成 YOLO-Pose data yaml（格式对齐项目现有 acupoint yaml）。
+
+    参数：
+        dataset_path: YAML ``path:`` 应指向的数据集根目录。
+            None 时退化为 yaml_path.parent（文件最终落在哪里，path 就指哪里）。
+            注意：staging 阶段文件先写在 .prepare_pose_rgbd_tmp 下、发布时才搬去正式目录，
+            因此调用方必须显式传入“发布后的正式目录”，否则 path 会残留 staging 临时绝对路径
+            （发布后随 staging 一起被删除 -> 训练时找不到数据）。
+    """
     tag = "RGBD" if rgbd else "RGB"
+    root = dataset_path if dataset_path is not None else yaml_path.parent
     lines = [
         f"# {tag} 手部关键点数据集配置 (YOLO-Pose)",
         f"# path: 数据集根目录（{tag} 实验，输入 {channels} 通道）",
-        f"path: {yaml_path.parent}",
+        f"path: {root}",
         "train: images/train",
         "val: images/val",
         "test: images/test",
@@ -310,6 +320,36 @@ def build_yaml(yaml_path: Path, class_name: str, kpt: int, channels: int, rgbd: 
         "# flip_idx 暂未配置：关键点语义与左右翻转对应关系尚未确认",
     ]
     yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def verify_published_yaml(yaml_path: Path) -> None:
+    """发布后的最终路径验证（数据生命周期最后一道防线）。
+
+    检查项：
+    - YAML 文本不得包含 staging 临时目录名（.prepare_pose_rgbd_tmp）
+    - path: 必须指向 yaml 所在目录（即正式 dataset/<class>/{rgb,rgbd}）
+    - path/images/{train,val,test} 与 path/labels/{train,val,test} 必须真实存在
+
+    任一不满足立即 RuntimeError，绝不把坏 YAML 当成功结果。
+    """
+    text = yaml_path.read_text(encoding="utf-8")
+    if ".prepare_pose_rgbd_tmp" in text:
+        raise RuntimeError(
+            f"最终 {yaml_path.name} 仍包含 .prepare_pose_rgbd_tmp 路径，发布失败: {yaml_path}")
+    path_line = next((ln for ln in text.splitlines() if ln.startswith("path:")), None)
+    if path_line is None:
+        raise RuntimeError(f"最终 {yaml_path.name} 缺少 path 字段: {yaml_path}")
+    root = Path(path_line.split(":", 1)[1].strip())
+    expected = yaml_path.parent
+    if root.resolve() != expected.resolve():
+        raise RuntimeError(
+            f"最终 {yaml_path.name} 的 path={root} != 正式目录 {expected}，发布失败")
+    for split in ("train", "val", "test"):
+        for sub in ("images", "labels"):
+            d = root / sub / split
+            if not d.is_dir():
+                raise RuntimeError(
+                    f"{yaml_path.name} 指向的 {sub}/{split} 目录不存在: {d}，发布失败")
 
 
 def main():
@@ -450,6 +490,8 @@ def main():
         print(f"[划分] 总={n} train={len(train)} val={len(val)} test={len(test)} kpt={kpt}")
 
         # 3. 复制图像 + 标签（RGB 3ch / RGBD 4ch 各自 images，labels 同一份双写）
+        # 注意：ids 来自 fused png / label 文件的 stem，本身已带 "color_" 前缀，
+        # 因此 rgb/label 源路径与目标名都直接拼 f"{sid}..." 即与源文件一致。
         for split, ids in (("train", train), ("val", val), ("test", test)):
             rgb_img_d = ds_root / "rgb" / "images" / split
             rgbd_img_d = ds_root / "rgbd" / "images" / split
@@ -458,13 +500,13 @@ def main():
             for d in (rgb_img_d, rgbd_img_d, rgb_lab_d, rgbd_lab_d):
                 d.mkdir(parents=True, exist_ok=True)
             for sid in ids:
-                # RGB 3ch 源（优先 jpg，回退 png）
+                # RGB 3ch 源（color_<ts>.jpg/png，优先 jpg，回退 png）
                 src_rgb = rgb_dir / f"{sid}.jpg"
                 if not src_rgb.exists():
                     src_rgb = rgb_dir / f"{sid}.png"
                 if src_rgb.exists():
                     shutil.copy2(src_rgb, rgb_img_d / f"{sid}{src_rgb.suffix}")
-                # RGBD 4ch 源（融合产物）
+                # RGBD 4ch 源（融合产物 color_<ts>.png）
                 src_rgbd = fused_dir / f"{sid}.png"
                 if src_rgbd.exists():
                     shutil.copy2(src_rgbd, rgbd_img_d / f"{sid}.png")
@@ -476,8 +518,13 @@ def main():
         print(f"[复制] 完成 dataset/{cls}/")
 
         # 4. 生成 data yaml
-        build_yaml(ds_root / "rgb" / "data_rgb.yaml", cls, kpt, 3, False)
-        build_yaml(ds_root / "rgbd" / "data_rgbd.yaml", cls, kpt, 4, True)
+        # 关键：path 必须指向“发布后的正式目录”（final_ds），
+        # 不能指向 staging（.prepare_pose_rgbd_tmp）——staging 会被删除，
+        # 残留临时绝对路径会导致训练时找不到数据。
+        build_yaml(ds_root / "rgb" / "data_rgb.yaml", cls, kpt, 3, False,
+                   dataset_path=final_ds / "rgb")
+        build_yaml(ds_root / "rgbd" / "data_rgbd.yaml", cls, kpt, 4, True,
+                   dataset_path=final_ds / "rgbd")
         print(f"[yaml] 已生成 dataset/{cls}/rgb/data_rgb.yaml 与 rgbd/data_rgbd.yaml")
 
         # 5. 校验并写出 dataset_report.json（GUI 数据集状态读取源；splits.json 仅负责样本划分）
@@ -567,7 +614,11 @@ def main():
                 shutil.rmtree(staging_root)
             raise RuntimeError("正式结果替换失败，已尝试回滚到原有输出") from e
 
-        # 两个新目录均安装成功：清理 backup 与 staging 残留
+        # 两个新目录均安装成功：先做最终路径验证（YAML path 指向正式目录且存在），
+        # 再清理 backup 与 staging 残留
+        verify_published_yaml(final_ds / "rgb" / "data_rgb.yaml")
+        verify_published_yaml(final_ds / "rgbd" / "data_rgbd.yaml")
+        print("[verify] data_rgb.yaml / data_rgbd.yaml path 均指向正式目录且 train/val/test 存在")
         if backup_root.exists():
             shutil.rmtree(backup_root)
         if staging_root.exists():

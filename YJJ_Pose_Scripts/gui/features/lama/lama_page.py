@@ -24,8 +24,8 @@ from typing import Callable, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QToolBar,
-    QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QSpinBox,
+    QToolBar, QVBoxLayout, QWidget,
 )
 
 from .widgets.inpaint_canvas import InpaintCanvas
@@ -34,6 +34,12 @@ from .lama_controller import LamaController
 
 class LamaPage(QWidget):
     """LaMa 擦除工作区：纯 UI + 信号发射。"""
+
+    # ---- 关键点数量选择范围 ----
+    # 默认 7：与历史 Hand 工作流完全一致，不碰新控件的用户行为不变。
+    MIN_KEYPOINT_COUNT = 1
+    MAX_KEYPOINT_COUNT = 32
+    DEFAULT_KEYPOINT_COUNT = 7
 
     # ---- 对外信号（Controller 连接）----
     openRequested = Signal()
@@ -53,6 +59,8 @@ class LamaPage(QWidget):
         self._log_sink: Callable[[str], None] = (
             log_sink if callable(log_sink) else (lambda _text: None)
         )
+        # 关键点数量是否被锁定（SetRef 成功 -> True；Reset / 重新 Open -> False）
+        self._keypoint_count_locked: bool = False
         self.controller: LamaController
         self._build_ui()
         # ---- 创建 Controller（连接本页 signals + 初始化）----
@@ -85,6 +93,17 @@ class LamaPage(QWidget):
         self._brush_slider.setValue(9)
         self._brush_slider.setFixedWidth(160)
         self._toolbar.addWidget(self._brush_slider)
+
+        # ---- 关键点数量 Keypoints：未建立 Reference 时可改，SetRef 后由 Controller 锁定 ----
+        self._toolbar.addWidget(QLabel("Keypoints:"))
+        self._keypoint_count_spin = QSpinBox()
+        self._keypoint_count_spin.setRange(
+            self.MIN_KEYPOINT_COUNT, self.MAX_KEYPOINT_COUNT)
+        self._keypoint_count_spin.setValue(self.DEFAULT_KEYPOINT_COUNT)
+        self._keypoint_count_spin.setToolTip(
+            "本次标注的关键点数量；SetRef 成功后锁定，重新 Open / Reset 后解锁"
+        )
+        self._toolbar.addWidget(self._keypoint_count_spin)
 
         # ---- 中央：左右翻页 + 画布 ----
         h = QHBoxLayout()
@@ -155,13 +174,33 @@ class LamaPage(QWidget):
             ref_text = f"Ref: {ref_idx + 1}"
         self._update_permanent_label(reference=ref_text)
 
-    def set_reference_ready(self, ready: bool) -> None:
-        text = "Reference Ready" if ready else "Reference Not Ready"
+    def set_reference_ready(self, ready: bool, keypoint_count: int | None = None) -> None:
+        """显示 Reference 状态；ready 且给出数量时显示 “Reference Ready | N keypoints”。"""
+        if ready:
+            text = "Reference Ready"
+            if keypoint_count is not None and keypoint_count > 0:
+                text = f"{text} | {keypoint_count} keypoints"
+        else:
+            text = "Reference Not Ready"
         self._update_permanent_label(reference_state=text)
 
     def set_prediction_info(self, success: int, total: int) -> None:
-        """显示 Prediction: x/7。"""
+        """显示 Prediction: success/total（total = 当前 session 关键点数量）。"""
         self._update_permanent_label(prediction=f"Prediction: {success}/{total}")
+
+    # ---- 关键点数量（Controller 读取 / 锁定）----
+    def KeypointCount(self) -> int:
+        """当前 UI 选择的关键点数量 N（Controller 在 SetRef 时读取）。"""
+        return int(self._keypoint_count_spin.value())
+
+    def SetKeypointCountEditable(self, editable: bool) -> None:
+        """是否允许修改关键点数量。
+
+        SetRef 成功后由 Controller 传 editable=False 锁定；
+        重新 Open / Reset session 后传 editable=True 解锁。
+        """
+        self._keypoint_count_locked = not bool(editable)
+        self._keypoint_count_spin.setEnabled(bool(editable))
 
     def set_busy(self, busy: bool) -> None:
         """busy 时禁用 Q / A / Prev / Next / Open / SetRef / TestOne。"""
@@ -170,6 +209,8 @@ class LamaPage(QWidget):
         # canvas 不禁用：用户在 busy 期间仍可看图（实际 Q 成功前 Controller 不会让用户操作）
         # 但为了避免破坏状态，busy 时整体禁用更安全
         self.canvas.setEnabled(not busy)
+        # 关键点数量：busy 期间一律禁用，恢复时按当前锁定状态还原
+        self._keypoint_count_spin.setEnabled((not busy) and (not self._keypoint_count_locked))
 
     # ---- busy 状态下仍允许显示瞬时状态 ----
     def set_busy_text(self, text: str) -> None:
@@ -185,7 +226,7 @@ class LamaPage(QWidget):
                                busy_state: str | None = None) -> None:
         """合并显示一行永久状态信息。
 
-        格式：Current: x/total | Ref: idx | filename | Reference Ready | Prediction: x/7 | Ready
+        格式：Current: x/total | Ref: idx | filename | Reference Ready | Prediction: x/N | Ready
         """
         if not hasattr(self, "_perm_state"):
             self._perm_state: dict[str, str] = {

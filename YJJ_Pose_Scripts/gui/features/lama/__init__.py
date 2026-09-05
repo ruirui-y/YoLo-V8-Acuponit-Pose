@@ -6,14 +6,14 @@ Phase 1（已完成）：LamaPage + InpaintCanvas + LamaController 骨架
 - LamaController: Open / Prev / Next / ClearMask 已接入
 
 Phase 2（已完成）：MaskLabelService
-- 7 component + bbox + 7 keypoints + YOLO label 格式
+- N component + bbox + N keypoints + YOLO label 格式（N 由 UI 决定，默认 7）
 
 Phase 3（已完成）：ReferenceAlignmentService
-- SetRef / predict / stable ID（按 (y,x) 升序固定 ID 0..6）
+- SetRef / predict / stable ID（首次 SetRef 按 (y,x) 升序建 canonical ID 0..N-1）
 
 Phase 4（当前）：A + TestOne 走同一 predict() API
 - LamaController 接入 ReferenceAlignmentService
-- SetRef: 从 finalMask 提取 7 centers + (y,x) 排序 -> set_reference
+- SetRef: 从 finalMask 提取 N 个 centers + (y,x) 排序 -> set_reference
 - A 键: predict(mode="assist") -> 写回 canvas + 保存 current_prediction
 - TestOne: predict(mode="strict") -> overlay 预览窗（不含 LaMa inference）
 - QImage <-> numpy 转换辅助方法

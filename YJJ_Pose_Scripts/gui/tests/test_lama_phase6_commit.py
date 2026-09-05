@@ -1,14 +1,16 @@
 """Phase 6 自动测试：Q 原子 Commit 状态机。
 
 不依赖真实 ONNX 模型，测试 Q 流程的验证逻辑和原子写辅助方法：
-1. Q BLOCK：模型未加载
-2. Q BLOCK：canvas 无图
+1. 创建 Page + Controller
+2. Q BLOCK：未 SetRef / 无 A 预测（先决条件，不写文件）
 3. Q BLOCK：mask 为空
-4. Q BLOCK：mask component 数 != 7
+4. Q BLOCK：mask component 数 != N
 5. _CommitSnapshot 数据结构
 6. _InpaintWorker 创建（不启动）
 7. _cleanup_tmp 静态方法
-8. Q 不会提前切图（busy 期间 Prev/Next 被拒绝）
+8. busy 期间 Prev/Next 被拒绝
+9. Q BLOCK：无 canvas 图
+10. Q BLOCK：模型不可用（全流程就绪，仅模型层失败，不写文件）
 
 需要 QApplication（创建 LamaPage/Controller），但不需要事件循环。
 启动：
@@ -36,6 +38,14 @@ from features.lama.lama_page import LamaPage             # noqa: E402
 from features.lama.lama_controller import (                # noqa: E402
     LamaController, _CommitSnapshot, _InpaintWorker,
 )
+from features.lama.services.lama_inference_service import LamaInferenceService  # noqa: E402
+
+# ---- 避免每个 LamaPage 后台真实加载 208MB CUDA ONNX（多页面并发会崩/巨慢）----
+# 与 test_lama_keypoint_count_configurable 一致：只 stub 加载/诊断接口，is_loaded 保持真实。
+LamaInferenceService.load_model = lambda self, p: True          # type: ignore
+LamaInferenceService.available_providers = lambda self: []      # type: ignore
+LamaInferenceService.active_providers = lambda self: []         # type: ignore
+LamaInferenceService.last_error = lambda self: ""               # type: ignore
 
 from typing import TYPE_CHECKING
 
@@ -90,8 +100,8 @@ def main() -> None:
     _check("1d. _commit_snapshot == None", ctrl._commit_snapshot is None, failures)
     _check("1e. _inpaint_worker == None", ctrl._inpaint_worker is None, failures)
 
-    # ================================================================ 2. Q BLOCK：模型未加载
-    print("[2] Q BLOCK：模型未加载")
+    # ================================================================ 2. Q BLOCK：未 SetRef / 无 A 预测
+    print("[2] Q BLOCK：缺少 Assist Mask 预测（先决条件不满足，不碰模型/不写文件）")
     # 先打开一张图
     img_path = os.path.join(tmpdir, "test001.png")
     _make_test_image(img_path, (640, 480), [(200, 200)])
@@ -101,7 +111,7 @@ def main() -> None:
     ctrl._load_current_image()
     _check("2a. canvas 有图", not page.canvas.source_image().isNull(), failures)
 
-    # 先画 7 个 mask（让 mask 检查通过），才会到模型未加载检查
+    # 画 7 个 mask（mask 检查可过），但从未 SetRef / 从未按 A
     centers_7_for_2b = [
         (100, 100), (200, 100), (300, 100),
         (100, 200), (200, 200), (300, 200),
@@ -110,16 +120,18 @@ def main() -> None:
     page.canvas.clear_mask()
     _draw_7_masks(page.canvas, centers_7_for_2b, radius=12)
 
-    # Q -> 应该 BLOCK（模型未加载，mask 已通过 7 component 检查）
+    # Q -> 应该 BLOCK：当前图不是 Reference 且没有 A 的 N 个 OK 预测
     ctrl._on_commit()
     status_after = page._status_label.text()
-    _check("2b. Q 模型未加载 -> BLOCK",
-           "model not loaded" in status_after.lower() or "LoadModel" in status_after,
+    _check("2b. Q 缺 A 预测 -> BLOCK（提示先按 A）",
+           "assist mask" in status_after.lower() or "请先按 a" in status_after.lower(),
            failures, f"status='{status_after}'")
     _check("2c. BLOCK 后 busy 仍为 False",
            not ctrl._busy, failures)
     _check("2d. BLOCK 后 current_index 不变",
            ctrl._current_index == 0, failures)
+    _check("2e. BLOCK 后未写出 label 文件",
+           not os.path.exists(os.path.join(tmpdir, "labels", "test001.txt")), failures)
 
     # ================================================================ 3. Q BLOCK：mask 为空
     print("[3] Q BLOCK：mask 为空")
@@ -247,6 +259,53 @@ def main() -> None:
     _check("9a. Q 无图 -> BLOCK",
            "no image" in status.lower(),
            failures, f"status='{status}'")
+
+    # ================================================================ 10. Q BLOCK：模型不可用（全流程已就绪）
+    print("[10] Q BLOCK：模型不可用（SetRef 成功、无对称歧义、仅模型层失败）")
+    page10 = LamaPage()
+    ctrl10 = page10.controller
+    # 先结束后台模型加载 worker（不能直接 drop 运行中 QThread 的引用，会原生崩溃），
+    # 再强制模型为“加载失败”状态（避免依赖 CUDA / 异步加载时序）
+    ctrl10.cleanup_worker()
+    ctrl10._lama_inference_service._session = None
+    ctrl10._model_load_failed = True
+
+    img10 = os.path.join(tmpdir, "test010.png")
+    _make_test_image(img10, (640, 480), [(200, 200)])
+    ctrl10._image_files = [img10]
+    ctrl10._current_index = 0
+    ctrl10._load_current_image()
+    # 非对称 7 点布局：能通过 Reference 几何一致性（避免对称歧义 BLOCK 挡住模型检查）
+    asym7 = [
+        (200, 400), (210, 300), (190, 200), (230, 190),
+        (170, 110), (250, 120), (220, 60),
+    ]
+    page10.canvas.clear_mask()
+    _draw_7_masks(page10.canvas, asym7, radius=12)
+    ctrl10._on_set_ref()
+    _check("10a. SetRef 成功（7 component、非对称布局）",
+           ctrl10._expected_keypoint_count == 7
+           and ctrl10._reference_alignment_service.is_ready(), failures)
+
+    ctrl10._on_commit()
+    status10 = page10._status_label.text()
+    _check("10b. 模型不可用 -> Q BLOCK（status 含模型加载失败信息）",
+           "cuda" in status10.lower() or "lama" in status10.lower() or "模型" in status10,
+           failures, f"status='{status10}'")
+    _check("10c. BLOCK 后 busy 仍为 False", not ctrl10._busy, failures)
+    _check("10d. BLOCK 后 current_index 不变", ctrl10._current_index == 0, failures)
+    _check("10e. BLOCK 后未写出 inpaint 图片",
+           not os.path.exists(os.path.join(tmpdir, "out", "test010.png")), failures)
+    _check("10f. BLOCK 后未写出 label",
+           not os.path.exists(os.path.join(tmpdir, "labels", "test010.txt")), failures)
+
+    # ---- 结束前统一停止各页面后台 worker，避免退出时 QThread 竞态 ----
+    try:
+        ctrl.cleanup_worker()
+        ctrl2.cleanup_worker()
+        ctrl10.cleanup_worker()
+    except Exception:  # noqa: BLE001
+        pass
 
     # ---------------------------------------------------------------- 总结
     print("-" * 60)
