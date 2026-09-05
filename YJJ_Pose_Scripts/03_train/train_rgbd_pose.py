@@ -10,6 +10,8 @@ def parse_args():
     p.add_argument('--fliplr', required=True, type=float, help='左右翻转概率 (0.0 关闭)')
     p.add_argument('--patience', required=True, type=int, help='早停耐心轮数 (0 关闭早停)')
     p.add_argument('--weights', required=True, help='模型初始化权重 .pt 路径')
+    p.add_argument('--name', default='train_pose_rgbd_4ch',
+                   help='训练输出实验名 (默认 train_pose_rgbd_4ch)')
     return p.parse_args()
 
 
@@ -43,7 +45,7 @@ def main():
             imgsz=640,
             batch=4,
             device='cuda:0' if torch.cuda.is_available() else 'cpu',
-            name='train_pose_rgbd_4ch',
+            name=args.name,
             project='runs/pose',
 
             patience=args.patience,
