@@ -1968,6 +1968,12 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--output-dir",
+        default="runs/pose_nme/all_test",
+        help="--all 批量评估输出目录（默认保持原有 runs/pose_nme/all_test）",
+    )
+
+    parser.add_argument(
         "--depth-dir",
         "--depth-npy-dir",
         dest="depth_npy_dir",
@@ -1990,7 +1996,7 @@ if __name__ == "__main__":
             conf_threshold=args.conf,
             imgsz=args.imgsz,
             match_iou_threshold=args.match_iou,
-            output_dir="runs/pose_nme/all_test",
+            output_dir=args.output_dir,
             depth_npy_dir=args.depth_npy_dir,
         )
 

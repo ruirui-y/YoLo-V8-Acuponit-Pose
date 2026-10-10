@@ -2,7 +2,7 @@
 
 Panel 只负责：
 - 创建自己的控件
-- 控件启停（模式切换时内部处理 enable/disable）
+- 控件显示与启停（模式切换时内部处理 show/hide、enable/disable）
 - 展示数据（统计 / yaml 路径 / 变体下拉）
 - 提供输入值（公开控件引用供 Controller 读取）
 - 发出自己的 signal
@@ -79,6 +79,7 @@ class DatasetPanel(QWidget):
     def _build_ui(self) -> None:
         g = QGroupBox("数据集准备")
         form = QFormLayout(g)
+        self._dataset_form = form
 
         # ---- 数据集来源模式（默认：使用已有数据集）----
         self.rb_new = QRadioButton("准备新数据集")
@@ -131,6 +132,7 @@ class DatasetPanel(QWidget):
         self.le_depth_npy = QLineEdit()
         self.le_label = QLineEdit()
         self.le_out = QLineEdit()
+        self.le_out.setToolTip("最终数据集目录；直接包含 rgb/、rgbd/、splits.json，不会自动追加 dataset/hand")
         self.le_class = QLineEdit("hand")
         self.le_low = QLineEdit("1100")
         self.le_high = QLineEdit("1850")
@@ -141,7 +143,7 @@ class DatasetPanel(QWidget):
         self.row_label = self._make_browse_row(self.le_label, is_dir=True)
         form.addRow("Labels目录:", self.row_label)
         self.row_out = self._make_browse_row(self.le_out, is_dir=True)
-        form.addRow("输出目录:", self.row_out)
+        form.addRow("数据集输出目录:", self.row_out)
         form.addRow("类别名:", self.le_class)
         form.addRow("Depth low(mm):", self.le_low)
         form.addRow("Depth high(mm):", self.le_high)
@@ -271,21 +273,36 @@ class DatasetPanel(QWidget):
 
     # ---- 内部：模式切换 ----
     def _on_mode_clicked(self) -> None:
-        """模式切换时内部处理 enable/disable，再发出信号供 Controller 反应。"""
+        """模式切换时内部处理显示与启停，再发出信号供 Controller 反应。"""
         self._apply_mode_state()
         self.modeChanged.emit()
 
+    def _set_dataset_row_visible(self, field: QWidget, visible: bool) -> None:
+        """同时隐藏 QFormLayout 的标签和字段，避免只隐藏输入框却留下行标题。"""
+        label = self._dataset_form.labelForField(field)
+        if label is not None:
+            label.setVisible(visible)
+        field.setVisible(visible)
+
     def _apply_mode_state(self) -> None:
-        """根据当前模式启停控件（纯 UI 状态）。"""
+        """只显示当前数据集来源模式需要的字段（纯 UI 状态，不清空路径）。"""
         existing = self.rb_existing.isChecked()
-        for row in (self.row_rgb, self.row_depth_npy, self.row_label, self.row_out):
-            row.setEnabled(not existing)
-        self.le_class.setEnabled(not existing)
-        self.le_low.setEnabled(not existing)
-        self.le_high.setEnabled(not existing)
-        self.btn_prepare.setEnabled(not existing)
-        for w in (self.row_existing, self.le_rgb_yaml, self.cb_rgbd_variant, self.le_rgbd_yaml):
-            w.setEnabled(existing)
+
+        new_fields = (
+            self.row_rgb, self.row_depth_npy, self.row_label, self.row_out,
+            self.le_class, self.le_low, self.le_high, self.btn_prepare,
+        )
+        existing_fields = (
+            self.row_existing, self.le_rgb_yaml,
+            self.cb_rgbd_variant, self.le_rgbd_yaml,
+        )
+
+        for field in new_fields:
+            self._set_dataset_row_visible(field, not existing)
+            field.setEnabled(not existing)
+        for field in existing_fields:
+            self._set_dataset_row_visible(field, existing)
+            field.setEnabled(existing)
 
     # ---- 内部：浏览对话框 ----
     def _make_browse_row(self, le: QLineEdit, is_dir: bool = False, filt: str = "All (*)") -> QWidget:

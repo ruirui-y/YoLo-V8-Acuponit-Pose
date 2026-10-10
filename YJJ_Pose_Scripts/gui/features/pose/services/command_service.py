@@ -20,7 +20,7 @@ class CommandService:
     def build_prepare_command(
         rgb: str, depth_npy: str, label: str, out: str, cls: str, low: float, high: float,
     ) -> list[str]:
-        """构造 prepare 子进程参数。"""
+        """构造 prepare 子进程参数；out 即最终数据集目录，不附加 dataset/<class>。"""
         return [
             str(_SCRIPTS["prepare"]),
             "--rgb_dir", rgb, "--depth_npy_dir", depth_npy,
@@ -96,6 +96,27 @@ class CommandService:
             "--weights", str(weights), "--data", str(yaml),
             "--split", "test", "--imgsz", "640", "--batch", "4",
         ]
+
+    @staticmethod
+    def build_nme_command(
+        dataset_root: Path, rgb_weights: Path, rgbd_weights: Path,
+        output_dir: Path, depth_dir: Path | None = None,
+    ) -> list[str]:
+        """使用已有 NME 脚本全量测试；固定第一阶段比较阈值。"""
+        cmd = [
+            str(_SCRIPTS["nme"]),
+            "--dataset-root", str(dataset_root),
+            "--rgb-model", str(rgb_weights),
+            "--rgbd-model", str(rgbd_weights),
+            "--conf", "0.001",
+            "--imgsz", "640",
+            "--match-iou", "0.50",
+            "--output-dir", str(output_dir),
+            "--all",
+        ]
+        if depth_dir is not None:
+            cmd += ["--depth-dir", str(depth_dir)]
+        return cmd
 
     @staticmethod
     def build_depth_ablation_command(weights: str, yaml: Path | None, out: Path) -> list[str]:

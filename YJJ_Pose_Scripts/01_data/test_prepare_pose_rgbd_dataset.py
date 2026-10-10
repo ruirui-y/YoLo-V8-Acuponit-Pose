@@ -1,8 +1,8 @@
-"""prepare_pose_rgbd_dataset 端到端数据集准备测试（YAML 临时路径 bug 回归）。
+"""prepare_pose_rgbd_dataset 端到端数据集准备测试（输出目录与 YAML 路径回归）。
 
 覆盖用户需求“八、测试要求 / Dataset YAML”全部 7 项：
-21. 使用临时目录（.prepare_pose_rgbd_tmp）准备数据集
-22. 最终移动/发布到正式目录（staging -> 正式 的事务性 move）
+21. 使用正式目录旁的临时 staging 准备数据集
+22. 直接发布到 --output_dir（不再自动嵌套 dataset/hand 或 out）
 23. RGB data_rgb.yaml 的 path 指向正式 rgb 目录
 24. RGBD data_rgbd.yaml 的 path 指向正式 rgbd 目录
 25. 两个 YAML 中都不存在 ".prepare_pose_rgbd_tmp"
@@ -77,7 +77,7 @@ def main() -> None:
         rgb_dir = base / "rgb_in"
         npy_dir = base / "npy_in"
         lab_dir = base / "lab_in"
-        out_root = base / "out_root"
+        out_root = base / "hand_test"  # --output_dir 就是最终数据集目录
         for d in (rgb_dir, npy_dir, lab_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -112,25 +112,25 @@ def main() -> None:
         finally:
             prep.shutil.move = orig_move
 
-        print("[21] 使用临时目录 .prepare_pose_rgbd_tmp 准备数据集")
+        print("[21] 使用正式目录旁的临时 staging 准备数据集")
         staged_src = [s for (s, _d) in moves if ".prepare_pose_rgbd_tmp" in s]
         _check("21a. 产物先写入 staging（存在 .prepare_pose_rgbd_tmp 源路径 move）",
-               len(staged_src) >= 2, failures, f"staged moves={len(staged_src)}")
+               len(staged_src) >= 1, failures, f"staged moves={len(staged_src)}")
         _check("21b. 发布完成后 staging 目录被清理",
-               not (out_root / ".prepare_pose_rgbd_tmp").exists(), failures)
+               not (base / ".hand_test.prepare_pose_rgbd_tmp").exists(), failures)
 
         print("[22] 最终发布到正式目录")
-        final_ds = out_root / "dataset" / "hand"
-        _check("22a. 正式 dataset/hand 存在", final_ds.is_dir(), failures)
-        _check("22b. dataset/hand/rgb 与 rgbd 存在",
+        final_ds = out_root
+        _check("22a. --output_dir 本身就是最终数据集目录", final_ds.is_dir(), failures)
+        _check("22b. hand_test/rgb 与 rgbd 存在",
                (final_ds / "rgb").is_dir() and (final_ds / "rgbd").is_dir(), failures)
         _check("22c. 有从 staging 目录 move 到正式位置的记录",
                any(".prepare_pose_rgbd_tmp" in s and "dataset" in s
                    for (s, _d) in moves), failures)
-        _check("22d. out/（融合 4ch 产物）存在且非空",
-               (out_root / "out").is_dir() and any((out_root / "out").iterdir()), failures)
+        _check("22d. 最终目录没有多余 out/ 或 dataset/hand 嵌套",
+               not (out_root / "out").exists() and not (out_root / "dataset").exists(), failures)
         _check("22e. backup 目录被清理",
-               not (out_root / ".prepare_pose_rgbd_backup").exists(), failures)
+               not (base / ".hand_test.prepare_pose_rgbd_backup").exists(), failures)
 
         print("[23/24] YAML path 指向正式目录")
         rgb_y = final_ds / "rgb" / "data_rgb.yaml"
@@ -185,6 +185,65 @@ def main() -> None:
                 print(f"      {split} images 与 labels stem 不一致")
         _check("27a. train/val/test 的 RGB==RGBD 集合且 labels==images",
                all_ok_27, failures)
+
+        print("[28] 已有目标目录安全保护")
+        before = (final_ds / "dataset_report.json").read_bytes()
+        old_argv = sys.argv
+        try:
+            sys.argv = [
+                "prepare_pose_rgbd_dataset.py",
+                "--rgb_dir", str(rgb_dir),
+                "--depth_npy_dir", str(npy_dir),
+                "--label_dir", str(lab_dir),
+                "--output_dir", str(final_ds),
+                "--class_name", "hand",
+            ]
+            try:
+                prep.main()
+            except RuntimeError as err:
+                blocked = "拒绝覆盖" in str(err)
+            else:
+                blocked = False
+        finally:
+            sys.argv = old_argv
+        _check("28a. 默认不覆盖已有非空数据集", blocked, failures)
+        _check("28b. 拒绝后旧数据报告不变",
+               before == (final_ds / "dataset_report.json").read_bytes(), failures)
+
+        print("[29] 已有数据集 --force 校验失败后回滚")
+        # 人为制造发布后校验失败，确保恢复原有数据集且不会遗留 backup。
+        original_verifier = prep.verify_published_yaml
+        old_argv = sys.argv
+        def _fail_verify(_path):
+            raise RuntimeError("simulated post-publish validation failure")
+        try:
+            prep.verify_published_yaml = _fail_verify
+            sys.argv = [
+                "prepare_pose_rgbd_dataset.py",
+                "--rgb_dir", str(rgb_dir),
+                "--depth_npy_dir", str(npy_dir),
+                "--label_dir", str(lab_dir),
+                "--output_dir", str(final_ds),
+                "--class_name", "hand",
+                "--depth_low", "1100",
+                "--depth_high", "1850",
+                "--force",
+            ]
+            try:
+                prep.main()
+            except RuntimeError as err:
+                rolled_back = "回滚" in str(err) or "恢复" in str(err)
+            else:
+                rolled_back = False
+        finally:
+            prep.verify_published_yaml = original_verifier
+            sys.argv = old_argv
+        _check("29a. 发布后校验失败会报错", rolled_back, failures)
+        _check("29b. 旧数据报告恢复成功",
+               before == (final_ds / "dataset_report.json").read_bytes(), failures)
+        _check("29c. 故障后临时目录与备份目录已清理",
+               not (base / ".hand_test.prepare_pose_rgbd_tmp").exists()
+               and not (base / ".hand_test.prepare_pose_rgbd_backup").exists(), failures)
 
     print("-" * 60)
     if failures:

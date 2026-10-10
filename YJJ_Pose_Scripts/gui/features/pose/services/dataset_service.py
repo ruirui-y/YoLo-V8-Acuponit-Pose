@@ -258,9 +258,9 @@ class DatasetService:
         return merged, ready
 
     @staticmethod
-    def load_report_json(out_dir: str | Path, cls: str) -> dict[str, Any] | None:
-        """从 prepare 产物路径读取 dataset_report.json，返回 dict 或 None。"""
-        rp = Path(out_dir) / "dataset" / cls / "dataset_report.json"
+    def load_report_json(dataset_dir: str | Path) -> dict[str, Any] | None:
+        """从最终数据集根目录读取 dataset_report.json，返回 dict 或 None。"""
+        rp = Path(dataset_dir) / "dataset_report.json"
         if not rp.exists():
             return None
         try:

@@ -9,7 +9,7 @@
      - 不使用 depth_show 伪彩图与 BGR2GRAY（伪彩非单调，转灰度会破坏真实 Depth 远近关系）。
   2. 划分：按时间戳从早到晚排序，70/15/15 切分为 train/val/test（不随机）
   3. 生成 RGB 与 RGBD 共用的 splits.json（单一数据源，保证两边样本编号完全一致）
-  4. 复制图像/标签到 dataset/<class>/{rgb,rgbd}/{images,labels}/{train,val,test}
+  4. 复制图像/标签到 <output_dir>/{rgb,rgbd}/{images,labels}/{train,val,test}
   5. 生成 data_rgb.yaml 与 data_rgbd.yaml（nc / kpt_shape 由数据推断，不写死）
   6. 逐样本严格校验：4ch uint8 / RGB 前三通道不变 / ch4 对 clipped raw depth Pearson·Spearman≈1
 
@@ -21,9 +21,9 @@ RGB 与 RGBD 严格共用同一份 splits.json 与同一份 labels，仅图像�
 用法:
 python YJJ_Pose_Scripts/01_data/prepare_pose_rgbd_dataset.py \
     --rgb_dir        "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image" \
-    --depth_npy_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_npy" \
-    --label_dir      "H:/YJJ/Yolo_RGBD/Resource/session1_200146/labels" \
-    --output_dir     "H:/YJJ/Yolo_RGBD/Resource/session1_200146" \
+    --depth_npy_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_npy_filtered" \
+    --label_dir      "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_labels" \
+    --output_dir     "H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand_test" \
     --class_name hand \
     --depth_low 1100 \
     --depth_high 1850 \
@@ -327,7 +327,7 @@ def verify_published_yaml(yaml_path: Path) -> None:
 
     检查项：
     - YAML 文本不得包含 staging 临时目录名（.prepare_pose_rgbd_tmp）
-    - path: 必须指向 yaml 所在目录（即正式 dataset/<class>/{rgb,rgbd}）
+    - path: 必须指向 yaml 所在目录（即正式 <output_dir>/{rgb,rgbd}）
     - path/images/{train,val,test} 与 path/labels/{train,val,test} 必须真实存在
 
     任一不满足立即 RuntimeError，绝不把坏 YAML 当成功结果。
@@ -357,7 +357,7 @@ def main():
     ap.add_argument("--rgb_dir", required=True, help="RGB 图像目录（color_<timestamp>.jpg/png）")
     ap.add_argument("--depth_npy_dir", required=True, help="Raw Depth NPY 目录（depth_<timestamp>.npy, uint16）")
     ap.add_argument("--label_dir", required=True, help="标签目录（color_<timestamp>.txt）")
-    ap.add_argument("--output_dir", required=True, help="输出根目录（内部生成 out/ 与 dataset/<class>/）")
+    ap.add_argument("--output_dir", required=True, help="最终数据集目录（直接包含 rgb/、rgbd/、splits.json 等）")
     ap.add_argument("--class_name", default="hand", help="类别名，默认 hand")
     ap.add_argument("--depth_low", type=float, default=1100.0, help="Depth clip 下界(mm)，可编辑")
     ap.add_argument("--depth_high", type=float, default=1850.0, help="Depth clip 上界(mm)，可编辑")
@@ -368,35 +368,42 @@ def main():
     rgb_dir = Path(args.rgb_dir)
     depth_dir = Path(args.depth_npy_dir)
     label_dir = Path(args.label_dir)
-    out_root = Path(args.output_dir)
-    cls = args.class_name.strip() or "hand"
+    requested_ds = Path(args.output_dir).expanduser()
+    if requested_ds.is_symlink():
+        raise RuntimeError(f"输出目录不能是符号链接: {requested_ds}")
+    final_ds = requested_ds.resolve()
+    cls = args.class_name.strip() or "hand"  # 类别名，与数据集目录名无关
     force = bool(args.force)
     low = float(args.depth_low)
     high = float(args.depth_high)
     if not (high > low):
         raise RuntimeError(f"depth_high({high}) 必须严格大于 depth_low({low})")
 
-    # === 输出目录保护：默认不允许覆盖非空结果 ===
-    final_out = out_root / "out"
-    final_ds = out_root / "dataset" / cls
-    if not force:
-        blockers = []
-        if final_out.exists() and any(final_out.iterdir()):
-            blockers.append(str(final_out))
-        if final_ds.exists() and any(final_ds.iterdir()):
-            blockers.append(str(final_ds))
-        if blockers:
-            print("[错误] 已有输出目录且非空，拒绝覆盖：")
-            for b in blockers:
-                print("  ", b)
-            print("提示：已有输出，如需重新生成请使用 --force")
-            raise RuntimeError("检测到已有非空输出目录，已中止（未传 --force）")
+    # 防止误将源数据目录作为输出或把输出建在输入目录内部。
+    for source_name, source in (("RGB", rgb_dir), ("Depth", depth_dir), ("Labels", label_dir)):
+        src = source.resolve()
+        if final_ds == src or final_ds.is_relative_to(src) or src.is_relative_to(final_ds):
+            raise RuntimeError(f"输出目录与 {source_name} 输入目录重叠，已中止: {final_ds} / {src}")
 
-    # === 临时 staging 目录：所有产物先写入此处，全部校验通过后才替换正式目录 ===
-    staging_root = out_root / ".prepare_pose_rgbd_tmp"
-    if staging_root.exists():
-        shutil.rmtree(staging_root)  # 清理上次崩溃残留
-    staging_root.mkdir(parents=True, exist_ok=True)
+    # --output_dir 即最终数据集根目录，不再追加 dataset/<class>。
+    if final_ds.is_symlink():
+        raise RuntimeError(f"输出目录不能是符号链接: {final_ds}")
+    if final_ds.exists() and not final_ds.is_dir():
+        raise RuntimeError(f"输出目录不是文件夹: {final_ds}")
+    if final_ds.exists() and any(final_ds.iterdir()) and not force:
+        raise RuntimeError(f"已有非空数据集目录，拒绝覆盖（如需覆盖请使用 --force）: {final_ds}")
+
+    # 临时融合结果和 backup 都放到正式目录的旁边，避免移动最终目录时把临时文件一并移动。
+    staging_root = final_ds.parent / f".{final_ds.name}.prepare_pose_rgbd_tmp"
+    backup_root = final_ds.parent / f".{final_ds.name}.prepare_pose_rgbd_backup"
+    for label, work_dir in (("staging", staging_root), ("backup", backup_root)):
+        if work_dir.is_symlink() or (work_dir.exists() and (not work_dir.is_dir() or any(work_dir.iterdir()))):
+            raise RuntimeError(f"检测到非空或异常的 {label} 目录，必须人工检查，禁止覆盖: {work_dir}")
+    final_ds.parent.mkdir(parents=True, exist_ok=True)
+    for work_dir in (staging_root, backup_root):
+        if work_dir.exists():
+            work_dir.rmdir()  # 仅清理空目录，不删除崩溃时残留的有效数据
+    staging_root.mkdir(parents=True)
 
     try:
         # 1. 融合 4 通道 PNG（写入 staging）
@@ -465,7 +472,7 @@ def main():
                 f"存在缺失/多出样本，已中止数据准备")
 
         # 2. 划分 70/15/15（按时间戳升序，不随机）
-        ds_root = staging_root / "dataset" / cls
+        ds_root = staging_root / "dataset"
         rgbd_ids = sorted(p.stem for p in fused_dir.glob(f"{RGB_PREFIX}*.png"))
         label_ids = sorted(p.stem for p in label_dir.glob(f"{RGB_PREFIX}*.txt"))
         usable = sorted(set(rgbd_ids) & set(label_ids))
@@ -515,7 +522,7 @@ def main():
                 if src_lab.exists():
                     shutil.copy2(src_lab, rgb_lab_d / f"{sid}.txt")
                     shutil.copy2(src_lab, rgbd_lab_d / f"{sid}.txt")
-        print(f"[复制] 完成 dataset/{cls}/")
+        print(f"[复制] 完成 RGB / RGBD train/val/test 目录")
 
         # 4. 生成 data yaml
         # 关键：path 必须指向“发布后的正式目录”（final_ds），
@@ -525,7 +532,7 @@ def main():
                    dataset_path=final_ds / "rgb")
         build_yaml(ds_root / "rgbd" / "data_rgbd.yaml", cls, kpt, 4, True,
                    dataset_path=final_ds / "rgbd")
-        print(f"[yaml] 已生成 dataset/{cls}/rgb/data_rgb.yaml 与 rgbd/data_rgbd.yaml")
+        print(f"[yaml] 已生成 {final_ds}/rgb/data_rgb.yaml 与 rgbd/data_rgbd.yaml")
 
         # 5. 校验并写出 dataset_report.json（GUI 数据集状态读取源；splits.json 仅负责样本划分）
         def _count(d):
@@ -554,84 +561,42 @@ def main():
         if not validation_passed:
             raise RuntimeError("最终校验未通过 (validation_passed=false)，已中止，不写入正式目录")
 
-        # === 全部校验通过：单事务替换 ===
-        # A: final_out -> backup_out   B: final_ds -> backup_ds
-        # C: staging/out -> final_out  D: staging/ds -> final_ds
-        # 任一步失败都回滚到运行前状态；backup 非空时禁止自动删除（可能是旧数据唯一副本）
-        backup_root = out_root / ".prepare_pose_rgbd_backup"
-        if backup_root.exists() and any(backup_root.iterdir()):
-            print("[错误] 检测到上次替换可能留下的 backup 且非空，禁止自动删除：")
-            print("  ", str(backup_root))
-            print("提示：请人工检查该 backup（可能是旧正式数据的唯一副本），确认无误后再重新运行")
-            raise RuntimeError("检测到非空 .prepare_pose_rgbd_backup，已中止以避免误删旧数据")
-        if backup_root.exists():
-            backup_root.rmdir()  # 仅当为空才移除，绝不自动删非空 backup
-        backup_root.mkdir(parents=True, exist_ok=True)
-        backup_out = backup_root / "out"
-        backup_ds = backup_root / ("dataset_" + cls)
-
-        # 记录旧正式目录是否存在（仅这些需要回滚恢复）
-        old_out_existed = final_out.exists()
+        # === 校验通过后单事务发布到 --output_dir ===
+        # 融合图片只在 staging/out 中中转，正式目录仅保留 RGB/RGBD 数据集和报告。
+        # 如果目标已存在，必须有 --force 才允许用 backup 暂存旧目录。
         old_ds_existed = final_ds.exists()
-
-        out_backed_up = False
-        ds_backed_up = False
-        out_installed = False
-        ds_installed = False
+        backed_up = False
+        published = False
         try:
-            # A/B：先把旧正式结果 move 到 backup 暂存（移动保存，非删除）
-            if old_out_existed:
-                shutil.move(str(final_out), str(backup_out))
-                out_backed_up = True
             if old_ds_existed:
-                shutil.move(str(final_ds), str(backup_ds))
-                ds_backed_up = True
-            # C/D：再把 staging 中的新结果 move 到正式位置
-            shutil.move(str(staging_root / "out"), str(final_out))
-            out_installed = True
-            shutil.move(str(staging_root / "dataset" / cls), str(final_ds))
-            ds_installed = True
-        except Exception as e:  # noqa: BLE001
-            # 事务失败：仅删本次新装入的正式目录；再从 backup 恢复旧结果；
-            # 只有恢复成功后才删除 backup（staging 残留始终可自动删除）
-            if out_installed and final_out.exists():
-                shutil.rmtree(final_out)
-            if ds_installed and final_ds.exists():
-                shutil.rmtree(final_ds)
-            restored = True
-            try:
-                if out_backed_up and backup_out.exists():
-                    shutil.move(str(backup_out), str(final_out))
-                if ds_backed_up and backup_ds.exists():
-                    shutil.move(str(backup_ds), str(final_ds))
-            except Exception as re:  # noqa: BLE001
-                restored = False
-                print(f"[错误] 回滚恢复旧结果失败，请人工处理 backup: {re}")
-            if restored and (out_backed_up or ds_backed_up):
-                if backup_root.exists():
-                    shutil.rmtree(backup_root)
-            if staging_root.exists():
-                shutil.rmtree(staging_root)
-            raise RuntimeError("正式结果替换失败，已尝试回滚到原有输出") from e
+                shutil.move(str(final_ds), str(backup_root))
+                backed_up = True
+            shutil.move(str(ds_root), str(final_ds))
+            published = True
 
-        # 两个新目录均安装成功：先做最终路径验证（YAML path 指向正式目录且存在），
-        # 再清理 backup 与 staging 残留
-        verify_published_yaml(final_ds / "rgb" / "data_rgb.yaml")
-        verify_published_yaml(final_ds / "rgbd" / "data_rgbd.yaml")
-        print("[verify] data_rgb.yaml / data_rgbd.yaml path 均指向正式目录且 train/val/test 存在")
-        if backup_root.exists():
+            # 验证也属于事务：即使最终 YAML 校验失败，也要回滚。
+            verify_published_yaml(final_ds / "rgb" / "data_rgb.yaml")
+            verify_published_yaml(final_ds / "rgbd" / "data_rgbd.yaml")
+            print("[verify] data_rgb.yaml / data_rgbd.yaml path 指向最终目录且 train/val/test 存在")
+        except Exception as e:  # noqa: BLE001
+            # 只有旧目录已备份成功，或新目录确实已发布，才允许清理目标位置。
+            if (backed_up or published) and final_ds.exists():
+                shutil.rmtree(final_ds)
+            if backed_up and backup_root.exists():
+                try:
+                    shutil.move(str(backup_root), str(final_ds))
+                except Exception as restore_err:  # noqa: BLE001
+                    print(f"[错误] 回滚失败，请人工恢复 backup: {backup_root} ({restore_err})")
+            raise RuntimeError("正式数据集发布或校验失败，已尝试恢复旧数据集") from e
+
+        # 成功发布之后，才可以删除已备份的旧目录。
+        if backed_up and backup_root.exists():
             shutil.rmtree(backup_root)
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
+        print(f"[READY] 数据集目录: {final_ds}")
         print(f"[READY] total={n} train={len(train)} val={len(val)} test={len(test)} "
-              f"kpt={kpt} rgb_ch=3 rgbd_ch=4 (已替换为正式目录)")
-    except Exception:
-        # 失败时清理 staging，保证正式结果（若有）不被破坏，异常继续向上抛出
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
-        raise
-    else:
-        # 成功：清理 staging 残留（out 与 dataset/<cls> 已移走，目录应已空）
+              f"kpt={kpt} rgb_ch=3 rgbd_ch=4")
+    finally:
+        # 清理本次 staging（包含仅供生成过程使用的重复融合 out/）。
         if staging_root.exists():
             shutil.rmtree(staging_root)
 

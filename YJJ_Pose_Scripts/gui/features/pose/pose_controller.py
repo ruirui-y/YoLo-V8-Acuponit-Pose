@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +28,8 @@ from .panels.dataset_panel import resolve_browse_start
 from .services.dataset_service import DatasetService
 from .services.command_service import CommandService
 from .services.result_parser import ResultParser
+from .services.nme_result_service import NmeResultService
+from .services.evaluation_dataset_service import EvaluationDatasetService
 
 from typing import TYPE_CHECKING
 
@@ -73,6 +76,8 @@ class PoseController:
         self._compare_pending: bool = False
         self._last_eval_result: Any | None = None
         self._last_ablate_result: Any | None = None
+        self._nme_output_dir: Path | None = None
+        self._nme_run_config: dict[str, Any] | None = None
 
         # ---- Cross-subject test set 状态 ----
         self._cross_validate_ok: bool = False     # Validate 通过后才允许 Rebuild
@@ -97,6 +102,8 @@ class PoseController:
             self.train_panel.le_py: "py_path",
             self.eval_panel.le_eval_rgb: "eval_rgb_pt",
             self.eval_panel.le_eval_rgbd: "eval_rgbd_pt",
+            self.eval_panel.le_eval_dataset: "eval_dataset_dir",
+            self.eval_panel.le_nme_depth: "nme_depth_dir",
         }
 
         self._connect_signals()
@@ -128,8 +135,10 @@ class PoseController:
         ep.evalRgbRequested.connect(self._on_eval_rgb)
         ep.evalRgbdRequested.connect(self._on_eval_rgbd)
         ep.compareRequested.connect(self._on_eval_cmp)
+        ep.nmeRequested.connect(self._on_nme)
         ep.depthAblationRequested.connect(self._on_ablate_depth)
         ep.rgbdWeightChanged.connect(self._refresh_ablate_info)
+        ep.evalDatasetChanged.connect(self._on_eval_dataset_changed)
         ep.settingsDirty.connect(self._save_settings)
 
         # ---- Status Log Panel ----
@@ -195,6 +204,39 @@ class PoseController:
             self.eval_panel.le_eval_rgbd.setText(str(_rgbd_def))
         self._refresh_4ch_label()
         self._on_mode_changed()
+        self._init_eval_defaults()
+
+    def _init_eval_defaults(self) -> None:
+        """没有保存测试目录时，优先找 cross-subject；否则使用当前已存在的数据集。"""
+        ep = self.eval_panel
+        if not ep.le_eval_dataset.text().strip():
+            candidates: list[Path] = []
+            for source in (self.dataset_panel.le_existing.text().strip(),
+                           self.dataset_panel.le_out.text().strip()):
+                if not source:
+                    continue
+                base = Path(source)
+                candidates.extend((base.parent / "hand_cross_subject", base))
+            for candidate in candidates:
+                if EvaluationDatasetService.inspect(candidate).get("ok"):
+                    ep.le_eval_dataset.setText(str(candidate))
+                    break
+        if not ep.le_nme_depth.text().strip():
+            cross_depth = self.dataset_panel.le_x_npy.text().strip()
+            if cross_depth and Path(cross_depth).is_dir():
+                ep.le_nme_depth.setText(cross_depth)
+        self._refresh_eval_test_info()
+        self._refresh_ablate_info()
+
+    def _on_eval_dataset_changed(self) -> None:
+        """唯一测试数据源变化：即时更新真实路径和计数，丢弃旧 mAP 结果。"""
+        self.eval_results.clear()
+        self._refresh_eval_test_info()
+        self._refresh_ablate_info()
+
+    def _eval_dataset_info(self) -> dict[str, Any]:
+        root = self.eval_panel.le_eval_dataset.text().strip()
+        return EvaluationDatasetService.inspect(self._nme_path(root) if root else "")
 
     # ================================================================ 模式切换
     def _on_mode_changed(self) -> None:
@@ -222,8 +264,7 @@ class PoseController:
             # rgbd_yaml 保持由 _check_existing_dataset 扫描设定
         else:
             out = self.dataset_panel.le_out.text().strip()
-            cls = self.dataset_panel.le_class.text().strip() or "hand"
-            base = Path(out) / "dataset" / cls if out else None
+            base = Path(out) if out else None
             if base:
                 self.rgb_yaml = base / "rgb" / "data_rgb.yaml"
                 self.rgbd_yaml = base / "rgbd" / "data_rgbd.yaml"
@@ -315,30 +356,27 @@ class PoseController:
         self._refresh_eval_test_info()
         self._refresh_ablate_info()
 
-    # ================================================================ 测试数据只读信息
+    # ================================================================ 统一评估测试源
     def _refresh_eval_test_info(self) -> None:
-        """刷新"测试结果"区上方"当前测试数据"只读显示。"""
+        """mAP/NME/消融都只展示统一评估目录（不读取数据集准备面板的 YAML）。"""
         ep = self.eval_panel
-        rgb_dir, rgb_cnt, rgb_ids = DatasetService.resolve_test_set(self.rgb_yaml)
-        rgbd_dir, rgbd_cnt, rgbd_ids = DatasetService.resolve_test_set(self.rgbd_yaml)
-        id_text = DatasetService.format_id_consistency(
-            rgb_cnt, rgbd_cnt, rgb_ids, rgbd_ids)
+        info = self._eval_dataset_info()
         ep.set_test_info({
-            "rgb_yaml": str(self.rgb_yaml) if self.rgb_yaml else None,
-            "rgb_img": str(rgb_dir) if rgb_dir else None,
-            "rgb_cnt": rgb_cnt,
-            "rgbd_yaml": str(self.rgbd_yaml) if self.rgbd_yaml else None,
-            "rgbd_img": str(rgbd_dir) if rgbd_dir else None,
-            "rgbd_cnt": rgbd_cnt,
+            "rgb_yaml": str(info.get("rgb_yaml") or "-"),
+            "rgb_img": str(info.get("rgb_dir") or "-"),
+            "rgb_cnt": info.get("rgb_cnt"),
+            "rgbd_yaml": str(info.get("rgbd_yaml") or "-"),
+            "rgbd_img": str(info.get("rgbd_dir") or "-"),
+            "rgbd_cnt": info.get("rgbd_cnt"),
             "split": "test（固定）",
-            "id_text": id_text,
+            "id_text": "完全一致" if info.get("ok") else "尚未验证",
+            "summary": info.get("message"),
         })
 
     def _refresh_ablate_info(self) -> None:
-        """刷新"Depth 消融测试"只读信息。"""
-        ep = self.eval_panel
-        ep.set_ablate_info({
-            "rgbd_yaml": str(self.rgbd_yaml) if self.rgbd_yaml else None,
+        info = self._eval_dataset_info()
+        self.eval_panel.set_ablate_info({
+            "rgbd_yaml": str(info.get("rgbd_yaml")) if info.get("ok") else None,
             "rgbd_pt": self.eval_panel.le_eval_rgbd.text().strip() or None,
         })
 
@@ -347,6 +385,9 @@ class PoseController:
         """启动时恢复上一次保存的路径到对应输入框。"""
         for le, key in self._settings_keys.items():
             v = self._settings_store.get(key)
+            if key == "eval_dataset_dir" and not v:
+                # 旧版 NME 独立目录升级为全页面唯一测试目录，不丢用户已有配置。
+                v = self._settings_store.get("nme_dataset_dir")
             if v:
                 le.setText(str(v))
 
@@ -595,19 +636,13 @@ class PoseController:
         self._start_eval_leg("rgbd")
 
     def _on_eval_cmp(self) -> None:
-        # 对比测试启动前再次校验 RGB 与 RGBD test ID 一致性
-        _, rgb_cnt, rgb_ids = DatasetService.resolve_test_set(self.rgb_yaml)
-        _, rgbd_cnt, rgbd_ids = DatasetService.resolve_test_set(self.rgbd_yaml)
-        if rgb_ids is None or rgbd_ids is None:
-            self._log("[错误] 对比测试被拒绝：RGB 或 RGBD test 目录缺失/无法解析，"
-                      "请先确认数据集已正确加载")
+        # 三种测试共用唯一测试目录；校验 YAML 的 path: 不允许指向其他数据集。
+        info = self._eval_dataset_info()
+        if not info.get("ok"):
+            self._log(f"[错误] 对比测试被拒绝：{info['message']}")
             self._set_status("对比测试被拒绝")
             return
-        if rgb_ids != rgbd_ids:
-            self._log(DatasetService.format_id_mismatch_error(
-                rgb_cnt, rgbd_cnt, rgb_ids, rgbd_ids))
-            self._set_status("对比测试被拒绝")
-            return
+        self.eval_panel.clear_results()
         self.eval_results.clear()
         self.eval_chain = ["rgb", "rgbd"]
         self._compare_pending = True
@@ -618,21 +653,23 @@ class PoseController:
             self._set_status("评估中断")
 
     def _start_eval_leg(self, leg: str) -> bool:
-        """启动单个 leg（rgb/rgbd）的 test 集评估；返回是否成功启动。"""
+        """mAP 单次测试/对比测试都固定读统一评估目录。"""
         name = "RGB" if leg == "rgb" else "RGBD"
-        tag = "rgb" if leg == "rgb" else "rgbd"
-        le = self.eval_panel.le_eval_rgb if leg == "rgb" else self.eval_panel.le_eval_rgbd
-        weights = le.text().strip()
-        yaml = self.rgb_yaml if leg == "rgb" else self.rgbd_yaml
-        if not weights or not Path(weights).exists():
-            self._log(f"[错误] {name} 权重不存在: {weights}")
+        ep = self.eval_panel
+        info = self._eval_dataset_info()
+        if not info.get("ok"):
+            self._log(f"[错误] {name} 评估数据集无效：{info['message']}")
+            self._set_status("评估数据集无效")
             return False
-        if not yaml or not Path(yaml).exists():
-            self._log(f'[错误] 未确定 {name} data yaml：请先在"使用已有数据集"选择数据集目录'
-                      f'（需含 dataset/hand/{tag}/data_{tag}.yaml）')
+        weights = (ep.le_eval_rgb if leg == "rgb" else ep.le_eval_rgbd).text().strip()
+        path = self._nme_path(weights) if weights else None
+        if path is None or not path.is_file():
+            self._log(f"[错误] {name} 权重不存在：{weights}")
             return False
+        yaml = info["rgb_yaml" if leg == "rgb" else "rgbd_yaml"]
         self._last_eval_result = None
-        cmd = CommandService.build_eval_command(weights, yaml)
+        self._log(f"[mAP] 模型={path}  数据集={info['root']}  test={info['rgb_cnt']}")
+        cmd = CommandService.build_eval_command(str(path), yaml)
         self._run(f"eval_{leg}", cmd, f"评估{name}中")
         return True
 
@@ -649,27 +686,145 @@ class PoseController:
         self._log("[对比] RGB vs RGBD 已完成，差值 = RGBD - RGB")
         self._set_status("对比完成")
 
+    # ================================================================ NME 对比
+    @staticmethod
+    def _nme_path(path_text: str) -> Path:
+        """GUI 允许输入绝对路径或相对项目根目录的路径。"""
+        path = Path(path_text).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
+
+    def _on_nme(self) -> None:
+        """运行原有 NME 脚本；每次输出独立目录，不覆盖论文历史 CSV。"""
+        if self._runner.is_running:
+            self._log("[警告] 当前有任务正在运行，请等待完成再开始 NME")
+            return
+        ep = self.eval_panel
+        info = self._eval_dataset_info()
+        if not info.get("ok"):
+            self._log(f"[错误] NME：{info['message']}")
+            self._set_status("NME 数据集无效")
+            return
+        dataset_root = info["root"]
+        valid, msg, count = NmeResultService.validate_dataset_root(dataset_root)
+        if not valid:
+            self._log(f"[错误] NME：{msg}")
+            self._set_status("NME 数据集无效")
+            return
+
+        rgb_text = ep.le_eval_rgb.text().strip()
+        rgbd_text = ep.le_eval_rgbd.text().strip()
+        if not rgb_text or not rgbd_text:
+            self._log("[错误] NME：需要同时选择 RGB 和 RGBD 的 best.pt")
+            return
+        rgb_weights = self._nme_path(rgb_text)
+        rgbd_weights = self._nme_path(rgbd_text)
+        for name, weights in (("RGB", rgb_weights), ("RGBD", rgbd_weights)):
+            if not weights.is_file():
+                self._log(f"[错误] NME：{name} 权重不存在: {weights}")
+                return
+
+        depth_text = ep.le_nme_depth.text().strip()
+        depth_dir = self._nme_path(depth_text) if depth_text else None
+        if depth_dir is not None and not depth_dir.is_dir():
+            self._log(f"[错误] NME：Depth NPY 目录不存在: {depth_dir}")
+            return
+        if depth_dir is None:
+            self._log("[提示] 未指定 Depth NPY：NME 正常计算，距离分组统计可能为 N/A")
+
+        output_dir = (_REPO_ROOT / "runs" / "pose_nme" / "gui" /
+                      datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        ep.clear_nme_results()
+        self._nme_output_dir = output_dir
+        self._nme_run_config = {
+            "dataset_root": str(dataset_root),
+            "rgb_model": str(rgb_weights),
+            "rgbd_model": str(rgbd_weights),
+            "depth_dir": str(depth_dir) if depth_dir is not None else None,
+            "conf": 0.001,
+            "imgsz": 640,
+            "match_iou": 0.50,
+            "split": "test",
+        }
+        self._save_settings()
+        self._log(f"[NME] 数据集: {dataset_root} | test={count}")
+        self._log(f"[NME] RGB: {rgb_weights}")
+        self._log(f"[NME] RGBD: {rgbd_weights}")
+        self._log(f"[NME] 输出: {output_dir}")
+        cmd = CommandService.build_nme_command(
+            dataset_root, rgb_weights, rgbd_weights, output_dir, depth_dir)
+        self._run("nme", cmd, "NME 对比测试中")
+
+    def _finish_nme(self, code: int) -> None:
+        """读取本次独立目录下的 CSV；禁止沿用以前的 all_test 结果。"""
+        out = self._nme_output_dir
+        if self._runner.user_stopped:
+            self._log("[结束] NME 测试已由用户停止，结果不予展示")
+            self._set_status("NME 已停止")
+        elif code != 0:
+            self._log(f"[错误] NME 测试失败 exit_code={code}")
+            self._set_status("NME 测试失败")
+        elif out is None:
+            self._log("[错误] NME 结果目录未设置")
+            self._set_status("NME 测试失败")
+        else:
+            try:
+                summary = NmeResultService.read_summary(out / "per_image.csv")
+                if self._nme_run_config is not None:
+                    try:
+                        (out / "run_config.json").write_text(
+                            json.dumps(self._nme_run_config, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8")
+                    except OSError as exc:
+                        self._log(f"[警告] NME 运行参数记录保存失败: {exc}")
+                self.eval_panel.display_nme_result(summary, out)
+                self._log(
+                    f"[NME] 完成：RGB={summary['rgb_matched']}  "
+                    f"RGBD={summary['rgbd_matched']}  "
+                    f"Common={summary['common']} / {summary['total']}")
+                self._log(
+                    f"[NME] RGB={summary['rgb_nme']}  "
+                    f"RGBD={summary['rgbd_nme']}  "
+                    f"RGBD wins={summary['rgbd_wins']}  "
+                    f"RGB wins={summary['rgb_wins']}")
+                self._log(f"[NME] per_image.csv / rgbd_better.csv / visualizations -> {out}")
+                if summary["common"] == 0:
+                    self._log("[警告] 当前没有双方共同匹配的图片，NME 均值不可比较")
+                    self._set_status("NME 完成（无共同匹配）")
+                elif summary["error_count"]:
+                    self._log(f"[警告] {summary['error_count']} 张图片评估出现 ERROR，"
+                              "请检查 CSV 和子进程日志")
+                    self._set_status("NME 完成（有异常样本）")
+                else:
+                    self._set_status("NME 对比完成")
+            except (OSError, ValueError, KeyError) as exc:
+                self._log(f"[错误] NME 无法读取本次结果: {exc}")
+                self._set_status("NME 结果读取失败")
+        self._nme_output_dir = None
+        self._nme_run_config = None
+        self.status_log_panel.set_stop_enabled(False)
+        self._restore_controls()
+
     # ================================================================ Depth 消融
     def _on_ablate_depth(self) -> None:
-        weights = self.eval_panel.le_eval_rgbd.text().strip()
-        yaml = self.rgbd_yaml
-        ypath = str(yaml) if yaml else None
-        if not weights or not Path(weights).exists():
-            self._log(f"[错误] RGBD 权重不存在: {weights}")
+        """消融也使用统一选择的 RGBD 权重和测试数据集。"""
+        info = self._eval_dataset_info()
+        if not info.get("ok"):
+            self._log(f"[错误] Depth 消融数据集无效：{info['message']}")
+            self._set_status("消融数据集无效")
             return
-        if not ypath or not Path(ypath).exists():
-            self._log('[错误] 未确定 RGBD data yaml：请先在"使用已有数据集"选择数据集目录')
+        weight_text = self.eval_panel.le_eval_rgbd.text().strip()
+        weight = self._nme_path(weight_text) if weight_text else None
+        if weight is None or not weight.is_file():
+            self._log(f"[错误] RGBD 权重不存在：{weight_text}")
             return
-        test_dir, test_cnt, _ = DatasetService.resolve_test_set(self.rgbd_yaml)
-        self._log("[Depth Ablation]")
-        self._log(f"Model: {weights}")
-        self._log(f"Data: {ypath}")
-        self._log("Split: test")
-        self._log("Variants:\n- true_depth\n- zero_depth")
-        self._log(f"Test images: {test_dir}")
-        self._log(f"Test count: {test_cnt}")
+        yaml = info["rgbd_yaml"]
+        self._log("[Depth Ablation] True Depth vs Zero Depth")
+        self._log(f"Model: {weight}")
+        self._log(f"Dataset: {info['root']}")
+        self._log(f"Data YAML: {yaml}")
+        self._log(f"Split: test ({info['rgbd_cnt']} 张)")
         out = _REPO_ROOT / "runs" / "ablation" / "depth_ablation_gui"
-        cmd = CommandService.build_depth_ablation_command(weights, yaml, out)
+        cmd = CommandService.build_depth_ablation_command(str(weight), yaml, out)
         self._run("ablate", cmd, "Depth 消融中")
 
     # ================================================================ ProcessRunner 回调
@@ -771,6 +926,11 @@ class PoseController:
             self._restore_controls()
             return
 
+        # ---- NME 专用评估分支 ----
+        if op == "nme":
+            self._finish_nme(code)
+            return
+
         # ---- 评估（eval_*）分支 ----
         if op and op.startswith("eval_"):
             leg = op.split("_", 1)[1]
@@ -836,12 +996,11 @@ class PoseController:
     def _load_prep_status(self) -> None:
         """prepare 成功后从产物路径读取 dataset_report.json 并刷新数据集状态。"""
         out = self.dataset_panel.le_out.text().strip()
-        cls = self.dataset_panel.le_class.text().strip() or "hand"
-        base = Path(out) / "dataset" / cls
+        base = Path(out)
         # 准备模式完成后统一设置训练用的 yaml 路径
         self.rgb_yaml = base / "rgb" / "data_rgb.yaml"
         self.rgbd_yaml = base / "rgbd" / "data_rgbd.yaml"
-        d = DatasetService.load_report_json(out, cls)
+        d = DatasetService.load_report_json(base)
         if d is None:
             self._log("[警告] 未找到 dataset_report.json，无法刷新数据集状态")
             return
