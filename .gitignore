@@ -180,3 +180,5 @@ datasets
 
 # WorkBuddy local project data (memory/state, not source)
 .workbuddy/
+
+*.bkp
