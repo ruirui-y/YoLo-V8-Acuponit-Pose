@@ -1,7 +1,7 @@
 """RGBD Pose 实验工作区页面（Feature Page）。
 
-负责组装现有 DatasetPanel / TrainPanel / EvalPanel / StatusLogPanel：
-- 单列可滚动工作区：Dataset / Train / Eval / Pose 状态区
+负责组装现有 DatasetPanel / TrainPanel / EvalPanel / FilterPanel / StatusLogPanel：
+- 单列可滚动工作区：Dataset / Train / Eval / Filter / Pose 状态区
 
 运行日志已上移为应用级组件（widgets/shared_log_panel.SharedLogPanel），
 由 MainWindow 创建并放在顶层 Horizontal QSplitter 右侧，
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from .panels.dataset_panel import DatasetPanel
 from .panels.eval_panel import EvalPanel
+from .panels.filter_panel import FilterPanel
 from .panels.status_log_panel import StatusLogPanel
 from .panels.train_panel import TrainPanel
 from .pose_controller import PoseController
@@ -38,12 +39,13 @@ class PosePage(QWidget):
         self.dataset_panel = DatasetPanel()
         self.train_panel = TrainPanel()
         self.eval_panel = EvalPanel()
+        self.filter_panel = FilterPanel()
         self.status_log_panel = StatusLogPanel()
 
         # ---- 创建 Controller（连接 Panel signals + 初始化）----
         self.controller = PoseController(
             self.dataset_panel, self.train_panel,
-            self.eval_panel, self.status_log_panel,
+            self.eval_panel, self.status_log_panel, self.filter_panel,
             log_sink=self._log_sink,
         )
 
@@ -53,7 +55,7 @@ class PosePage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ---- 单列可滚动工作区：Dataset / Train / Eval / Pose 状态 ----
+        # ---- 单列可滚动工作区：Dataset / Train / Eval / Filter / Pose 状态 ----
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
@@ -62,6 +64,7 @@ class PosePage(QWidget):
         v.addWidget(self.dataset_panel)
         v.addWidget(self.train_panel)
         v.addWidget(self.eval_panel)
+        v.addWidget(self.filter_panel)
         v.addWidget(self.status_log_panel.status_widget)
         root.addWidget(scroll)
 

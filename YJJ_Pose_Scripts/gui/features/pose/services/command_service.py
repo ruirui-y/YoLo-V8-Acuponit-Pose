@@ -119,6 +119,26 @@ class CommandService:
         return cmd
 
     @staticmethod
+    def build_filter_command(
+        dataset_root: Path, weights: list[Path], output_dir: Path,
+        min_common: int = 0,
+    ) -> list[str]:
+        """构造公共测试集筛选子进程参数（判定口径与 NME 脚本一致）。"""
+        cmd = [
+            str(_SCRIPTS["filter"]),
+            "--dataset-root", str(dataset_root),
+            "--weights", *[str(w) for w in weights],
+            "--output-dir", str(output_dir),
+            "--split", "test",
+            "--match-iou", "0.50",
+            "--conf", "0.001",
+            "--imgsz", "640",
+        ]
+        if min_common > 0:
+            cmd += ["--min-common", str(min_common)]
+        return cmd
+
+    @staticmethod
     def build_depth_ablation_command(weights: str, yaml: Path | None, out: Path) -> list[str]:
         """构造 Depth 消融子进程参数（仅 true_depth / zero_depth，split 固定 test）。"""
         return [

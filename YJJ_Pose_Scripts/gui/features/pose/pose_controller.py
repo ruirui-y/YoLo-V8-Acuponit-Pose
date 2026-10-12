@@ -30,6 +30,7 @@ from .services.command_service import CommandService
 from .services.result_parser import ResultParser
 from .services.nme_result_service import NmeResultService
 from .services.evaluation_dataset_service import EvaluationDatasetService
+from .services.testset_filter_service import TestsetFilterService
 
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from .panels.dataset_panel import DatasetPanel
     from .panels.train_panel import TrainPanel
     from .panels.eval_panel import EvalPanel
+    from .panels.filter_panel import FilterPanel
     from .panels.status_log_panel import StatusLogPanel
 
 
@@ -50,12 +52,14 @@ class PoseController:
         train_panel: TrainPanel,
         eval_panel: EvalPanel,
         status_log_panel: StatusLogPanel,
+        filter_panel: FilterPanel,
         log_sink: Callable[[str], None] | None = None,
     ) -> None:
         self.dataset_panel: DatasetPanel = dataset_panel
         self.train_panel: TrainPanel = train_panel
         self.eval_panel: EvalPanel = eval_panel
         self.status_log_panel: StatusLogPanel = status_log_panel
+        self.filter_panel: FilterPanel = filter_panel
 
         # ---- 应用级共享日志 sink（SharedLogPanel.append_log）----
         # 日志统一写到 MainWindow 右侧唯一日志面板；status 仍走 Pose status panel。
@@ -78,6 +82,7 @@ class PoseController:
         self._last_ablate_result: Any | None = None
         self._nme_output_dir: Path | None = None
         self._nme_run_config: dict[str, Any] | None = None
+        self._filter_output_dir: Path | None = None
 
         # ---- Cross-subject test set 状态 ----
         self._cross_validate_ok: bool = False     # Validate 通过后才允许 Rebuild
@@ -104,6 +109,8 @@ class PoseController:
             self.eval_panel.le_eval_rgbd: "eval_rgbd_pt",
             self.eval_panel.le_eval_dataset: "eval_dataset_dir",
             self.eval_panel.le_nme_depth: "nme_depth_dir",
+            self.filter_panel.le_filter_dataset: "filter_dataset_dir",
+            self.filter_panel.le_filter_out: "filter_output_dir",
         }
 
         self._connect_signals()
@@ -141,6 +148,11 @@ class PoseController:
         ep.evalDatasetChanged.connect(self._on_eval_dataset_changed)
         ep.settingsDirty.connect(self._save_settings)
 
+        # ---- Filter Panel ----
+        fp = self.filter_panel
+        fp.filterRequested.connect(self._on_filter)
+        fp.settingsDirty.connect(self._save_settings)
+
         # ---- Status Log Panel ----
         self.status_log_panel.stopRequested.connect(self._on_stop)
 
@@ -156,6 +168,7 @@ class PoseController:
         self.dataset_panel.set_start_dir_provider(start_dir_provider)
         self.train_panel.set_start_dir_provider(start_dir_provider)
         self.eval_panel.set_start_dir_provider(start_dir_provider)
+        self.filter_panel.set_start_dir_provider(start_dir_provider)
 
     def _make_browse_start_provider(self) -> Callable[[QLineEdit], str]:
         """构造 browse 起始目录解析闭包（空串 -> Panel 回退项目根目录）。"""
@@ -205,6 +218,7 @@ class PoseController:
         self._refresh_4ch_label()
         self._on_mode_changed()
         self._init_eval_defaults()
+        self._init_filter_defaults()
 
     def _init_eval_defaults(self) -> None:
         """没有保存测试目录时，优先找 cross-subject；否则使用当前已存在的数据集。"""
@@ -227,6 +241,19 @@ class PoseController:
                 ep.le_nme_depth.setText(cross_depth)
         self._refresh_eval_test_info()
         self._refresh_ablate_info()
+
+    def _init_filter_defaults(self) -> None:
+        """筛选页未设置时：源数据集沿用统一测试数据集，输出目录给默认值。"""
+        fp = self.filter_panel
+        if not fp.dataset_root():
+            eval_root = self.eval_panel.le_eval_dataset.text().strip()
+            if eval_root:
+                fp.set_dataset_root(eval_root)
+        if not fp.output_dir():
+            root = fp.dataset_root()
+            if root:
+                base = Path(root).expanduser()
+                fp.set_output_dir(str(base.parent / "hand_common"))
 
     def _on_eval_dataset_changed(self) -> None:
         """唯一测试数据源变化：即时更新真实路径和计数，丢弃旧 mAP 结果。"""
@@ -390,6 +417,19 @@ class PoseController:
                 v = self._settings_store.get("nme_dataset_dir")
             if v:
                 le.setText(str(v))
+        self._restore_filter_weights()
+
+    def _restore_filter_weights(self) -> None:
+        """恢复上次保存的筛选权重列表（JSON 字符串），避免每次重复添加。"""
+        raw = self._settings_store.get("filter_weights")
+        if not raw:
+            return
+        try:
+            paths = json.loads(str(raw))
+        except (TypeError, ValueError):
+            return
+        if isinstance(paths, list):
+            self.filter_panel.set_weights([str(p) for p in paths])
 
     def _save_settings(self) -> None:
         """把当前所有路径写入 QSettings。"""
@@ -397,6 +437,10 @@ class PoseController:
             t = le.text().strip()
             if t:
                 self._settings_store.set(key, t)
+        # 筛选权重列表：存 JSON 字符串，避免依赖 QSettings 的 QStringList 行为
+        self._settings_store.set(
+            "filter_weights",
+            json.dumps(self.filter_panel.weights(), ensure_ascii=False))
         self._settings_store.sync()
 
     def save_settings(self) -> None:
@@ -418,6 +462,7 @@ class PoseController:
         self.dataset_panel.set_cross_busy(disable)
         self.train_panel.set_operation_buttons_enabled(not disable)
         self.eval_panel.set_operation_buttons_enabled(not disable)
+        self.filter_panel.set_operation_buttons_enabled(not disable)
 
     def _restore_controls(self) -> None:
         """任务结束后恢复"当前模式应有的控件状态"。"""
@@ -426,6 +471,7 @@ class PoseController:
         self.dataset_panel.set_cross_busy(False)
         self.dataset_panel.set_cross_rebuild_ok(self._cross_validate_ok)
         self.eval_panel.set_operation_buttons_enabled(True)
+        self.filter_panel.set_operation_buttons_enabled(True)
 
     # ================================================================ 启动子进程
     def _run(self, op: str, cmd: list[str], status: str) -> None:
@@ -804,6 +850,86 @@ class PoseController:
         self.status_log_panel.set_stop_enabled(False)
         self._restore_controls()
 
+    # ================================================================ 公共测试集筛选
+    def _on_filter(self) -> None:
+        """用所选权重求「全部命中」的公共测试集，导出到指定目录。"""
+        if self._runner.is_running:
+            self._log("[警告] 当前有任务正在运行，请等待完成再开始筛选")
+            return
+        fp = self.filter_panel
+        root_text = fp.dataset_root()
+        valid, msg, count = TestsetFilterService.validate_dataset_root(root_text)
+        if not valid:
+            self._log(f"[错误] 筛选：{msg}")
+            self._set_status("筛选源数据集无效")
+            return
+        dataset_root = Path(root_text).expanduser()
+
+        weights_text = fp.weights()
+        ok, wmsg = TestsetFilterService.validate_weights(weights_text)
+        if not ok:
+            self._log(f"[错误] 筛选：{wmsg}")
+            self._set_status("筛选权重无效")
+            return
+        weights = [Path(w).expanduser() for w in weights_text]
+
+        ok, omsg = TestsetFilterService.validate_output_dir(fp.output_dir())
+        if not ok:
+            self._log(f"[错误] 筛选：{omsg}")
+            self._set_status("筛选输出目录无效")
+            return
+        output_dir = Path(fp.output_dir()).expanduser()
+
+        fp.clear_filter_results()
+        self._filter_output_dir = output_dir
+        self._save_settings()
+        self._log(f"[筛选] 源数据集: {dataset_root} | 可用 stem={count}")
+        self._log(f"[筛选] 权重 {len(weights)} 个:")
+        for weights_path in weights:
+            self._log(f"        {weights_path}")
+        self._log(f"[筛选] 输出: {output_dir}")
+        cmd = CommandService.build_filter_command(
+            dataset_root, weights, output_dir, fp.min_common())
+        self._run("filter", cmd, "公共测试集筛选中")
+
+    def _finish_filter(self, code: int) -> None:
+        """读取筛选产物 filter_summary.json 并展示；不重算预测。"""
+        out = self._filter_output_dir
+        if self._runner.user_stopped:
+            self._log("[结束] 筛选已由用户停止，结果不予展示")
+            self._set_status("筛选已停止")
+        elif code != 0:
+            self._log(f"[错误] 筛选失败 exit_code={code}")
+            self._set_status("筛选失败")
+        elif out is None:
+            self._log("[错误] 筛选输出目录未设置")
+            self._set_status("筛选失败")
+        else:
+            try:
+                summary = TestsetFilterService.read_summary(out / "filter_summary.json")
+                self.filter_panel.display_result(summary, out)
+                total = summary.get("total_stems", 0)
+                for item in summary.get("weights", []):
+                    self._log(
+                        f"[筛选] {item.get('name', '?')} "
+                        f"({item.get('channels', '?')}ch) "
+                        f"命中 {item.get('matched', 0)}/{total}")
+                self._log(
+                    f"[筛选] 公共集 {summary.get('common_count', 0)}/{total} 张，"
+                    f"剔除 {summary.get('dropped_count', 0)} 张")
+                self._log(f"[筛选] 结果目录: {out}")
+                if summary.get("common_count", 0) == 0:
+                    self._log("[警告] 公共集为空：没有任何一张图被全部权重命中")
+                    self._set_status("筛选完成（公共集为空）")
+                else:
+                    self._set_status("筛选完成")
+            except (OSError, ValueError, KeyError) as exc:
+                self._log(f"[错误] 筛选无法读取本次结果: {exc}")
+                self._set_status("筛选结果读取失败")
+        self._filter_output_dir = None
+        self.status_log_panel.set_stop_enabled(False)
+        self._restore_controls()
+
     # ================================================================ Depth 消融
     def _on_ablate_depth(self) -> None:
         """消融也使用统一选择的 RGBD 权重和测试数据集。"""
@@ -929,6 +1055,11 @@ class PoseController:
         # ---- NME 专用评估分支 ----
         if op == "nme":
             self._finish_nme(code)
+            return
+
+        # ---- 公共测试集筛选分支 ----
+        if op == "filter":
+            self._finish_filter(code)
             return
 
         # ---- 评估（eval_*）分支 ----
