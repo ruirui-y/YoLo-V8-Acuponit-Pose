@@ -1,4 +1,4 @@
-"""
+﻿"""
 生成「raw npy Depth 版」手部 RGBD 4 通道 PNG。
 
 - RGB 三通道: 直接取自原始 color_*.jpg (cv2.imread -> BGR), 像素逐字节不变
@@ -25,9 +25,9 @@ def ts_of(name: str, prefix: str):
 
 def main():
     ap = argparse.ArgumentParser(description="raw npy Depth 版手部 RGBD 生成")
-    ap.add_argument("--image-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image")
-    ap.add_argument("--npy-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_npy")
-    ap.add_argument("--out-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_rawdepth")
+    ap.add_argument("--image-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_image")
+    ap.add_argument("--npy-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_npy")
+    ap.add_argument("--out-dir", default=r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_rawdepth")
     ap.add_argument("--low", type=float, default=1100.0, help="mm, 低于此值 clip 到 low")
     ap.add_argument("--high", type=float, default=1850.0, help="mm, 高于此值 clip 到 high")
     ap.add_argument("--invalid0", type=int, default=0)

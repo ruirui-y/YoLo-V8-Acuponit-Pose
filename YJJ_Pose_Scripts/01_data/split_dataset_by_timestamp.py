@@ -1,4 +1,4 @@
-"""
+﻿"""
 按时间戳从早到晚排序，将手部 RGB / RGBD 数据集划分为 train / val / test，
 并生成 splits.json 作为 RGB 与 RGBD 共享的单一数据源，
 确保两者 train/val/test 样本编号完全一致，仅图像通道不同（3ch vs 4ch）。
@@ -11,7 +11,7 @@ import json
 import shutil
 from pathlib import Path
 
-BASE = Path(r"H:/YJJ/Yolo_RGBD/Resource/session1_200146")
+BASE = Path(r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146")
 PREFIX = "color_"  # RGB / 标签文件名前缀；RGBD 输出 PNG 也用同一 stem
 
 

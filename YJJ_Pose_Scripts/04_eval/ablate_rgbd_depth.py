@@ -1,4 +1,4 @@
-"""RGBD Depth 消融评估 (验证已训练的 RGBD Pose 模型是否真实利用第 4 通道 Depth)
+﻿"""RGBD Depth 消融评估 (验证已训练的 RGBD Pose 模型是否真实利用第 4 通道 Depth)
 
 仅用于已训练好的 RGBD 4ch 模型：在同一批 RGBD test 图片上，构造三种 Depth 输入，
 比较检测/关键点指标，判断模型是否真的在用 Depth。
@@ -90,7 +90,7 @@ import numpy as np
 
 # ---- 默认路径（本机 Resource 数据集；如换机用 --rgbd-yaml 指定）----
 _DEFAULT_RGBD_YAML = (
-    r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd/data_rgbd.yaml"
+    r"H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd/data_rgbd.yaml"
 )
 _DEFAULT_WEIGHTS = r"runs/pose/train_pose_rgbd_4ch/weights/best.pt"
 _DEFAULT_OUT = r"runs/ablation/rgbd_depth"  # runs/ 已被 .gitignore 忽略，作为安全临时目录

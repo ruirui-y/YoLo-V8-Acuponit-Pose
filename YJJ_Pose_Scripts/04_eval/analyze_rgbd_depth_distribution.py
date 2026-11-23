@@ -1,4 +1,4 @@
-"""统计完整 RGBD 数据集（train / val / test + overall）中"真正送进模型的第4通道 uint8 Depth"数值分布。
+﻿"""统计完整 RGBD 数据集（train / val / test + overall）中"真正送进模型的第4通道 uint8 Depth"数值分布。
 
 目的：确认当前 Hand test 12 张连续帧中"True Depth 有效区域均值约 170"是整份数据集的常态，
 还是仅这 12 张的特殊情况。直接统计模型实际看到的第4通道幅度（已映射后的 uint8 Depth，
@@ -36,7 +36,7 @@ import yaml
 
 # ---- 默认路径（本机 rawdepth 4ch 数据集；如换机用 --rgbd-yaml 指定）----
 _DEFAULT_RGBD_YAML = (
-    r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml"
+    r"H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml"
 )
 _DEFAULT_OUT = r"runs/depth_distribution"  # runs/ 已被 .gitignore 忽略，作为安全输出目录
 

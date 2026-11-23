@@ -1,4 +1,4 @@
-"""
+﻿"""
 一键准备 RGB / RGBD Pose 数据集（Raw Depth 版，第4通道直接来自 depth_<timestamp>.npy）：
 
   1. 融合：将 RGB（color_<timestamp>.jpg/png）与原始 Depth（depth_<timestamp>.npy, uint16）
@@ -20,10 +20,10 @@ RGB 与 RGBD 严格共用同一份 splits.json 与同一份 labels，仅图像�
 
 用法:
 python YJJ_Pose_Scripts/01_data/prepare_pose_rgbd_dataset.py \
-    --rgb_dir        "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image" \
-    --depth_npy_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_npy_filtered" \
-    --label_dir      "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_labels" \
-    --output_dir     "H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand_test" \
+    --rgb_dir        "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_image" \
+    --depth_npy_dir  "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_npy_filtered" \
+    --label_dir      "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_labels" \
+    --output_dir     "H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand_test" \
     --class_name hand \
     --depth_low 1100 \
     --depth_high 1850 \

@@ -1,4 +1,4 @@
-"""从已生成的 Hand RGBD 4 通道数据集（rgbd_rawdepth）生成一个完全独立的新数据集（rgbd_rawdepth_scale25）。
+﻿"""从已生成的 Hand RGBD 4 通道数据集（rgbd_rawdepth）生成一个完全独立的新数据集（rgbd_rawdepth_scale25）。
 
 目标：保持 RGB / train-val-test split / label / valid mask 完全不变，仅把"模型当前真正看到的第4通道
 uint8 Depth"按 scale（本轮 0.25）整体缩放，用于构造低幅度 Depth 配对数据集。
@@ -16,9 +16,9 @@ uint8 Depth"按 scale（本轮 0.25）整体缩放，用于构造低幅度 Depth
 调用示例：
   python YJJ_Pose_Scripts/01_data/scale_rgbd_depth_dataset.py
   python YJJ_Pose_Scripts/01_data/scale_rgbd_depth_dataset.py \
-      --rgbd-yaml H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml \
+      --rgbd-yaml H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml \
       --scale 0.25 \
-      --out H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth_scale25
+      --out H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth_scale25
 """
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ import yaml
 
 # ---- 默认路径（与本轮实际运行一致）----
 _DEFAULT_RGBD_YAML = (
-    r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml"
+    r"H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth/data_rgbd_rawdepth.yaml"
 )
 _DEFAULT_SCALE = 0.25
-_DEFAULT_OUT = r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth_scale25"
+_DEFAULT_OUT = r"H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth_scale25"
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")  # 当前项目实际使用的扩展名（大小写不敏感）
 _SPLITS = ("train", "val", "test")

@@ -1,4 +1,4 @@
-# 用于将 RGB 图像与 uint8 Depth 图像按时间戳配对，
+﻿# 用于将 RGB 图像与 uint8 Depth 图像按时间戳配对，
 # 合成为 YOLO RGBD 使用的 4 通道 PNG。
 #
 # 配对规则（按时间戳，非按整文件名）：
@@ -10,9 +10,9 @@
 #
 # 用法:
 # python YJJ_Pose_Scripts/01_data/fuse_rgbd_by_timestamp.py \
-#     --rgb_dir    "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image" \
-#     --depth_dir  "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_depth" \
-#     --output_dir "H:/YJJ/Yolo_RGBD/Resource/session1_200146/out"
+#     --rgb_dir    "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_image" \
+#     --depth_dir  "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_depth" \
+#     --output_dir "H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out"
 #
 # 可选: --label_dir 指定标签目录时，只融合 RGB+Depth+Label 三者时间戳齐备的样本。
 import argparse

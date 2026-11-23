@@ -1,4 +1,4 @@
-"""
+﻿"""
 构建「hand raw-depth RGBD」正式数据集 (不训练, 不覆盖旧数据)。
 
 - 严格读取 dataset/hand/splits.json 的 train/val/test 划分 (不重新随机)
@@ -13,9 +13,9 @@ import json
 import shutil
 from pathlib import Path
 
-BASE = Path(r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand")
+BASE = Path(r"H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand")
 SPLITS = BASE / "splits.json"
-SRC_IMG = Path(r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_rawdepth")
+SRC_IMG = Path(r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_rawdepth")
 SRC_LBL_RGB = BASE / "rgb/labels"
 SRC_LBL_RGBD = BASE / "rgbd/labels"
 OUT = BASE / "rgbd_rawdepth"
@@ -61,7 +61,7 @@ def main():
 
     # ---- 2. YAML ----
     yaml_text = (
-        "path: H:/YJJ/Yolo_RGBD/Resource/session1_200146/dataset/hand/rgbd_rawdepth\n"
+        "path: H:/YJJ/Yolo_RGBD/Resource/hand_back/datasets/hand/rgbd_rawdepth\n"
         "train: images/train\n"
         "val: images/val\n"
         "test: images/test\n"
@@ -122,7 +122,7 @@ def main():
 
     # ---- 5. 随机 20 张: 新图前三通道 vs 原始 out_image RGB ----
     rng = np.random.default_rng(42)
-    orig_rgb_dir = Path(r"H:/YJJ/Yolo_RGBD/Resource/session1_200146/out_image")
+    orig_rgb_dir = Path(r"H:/YJJ/Yolo_RGBD/Resource/hand_back/raw/session1_200146/out_image")
     all_new = [(s, sid) for s in ("train", "val", "test") for sid in sp[s]]
     sub = rng.choice(len(all_new), size=20, replace=False)
     mism = 0
